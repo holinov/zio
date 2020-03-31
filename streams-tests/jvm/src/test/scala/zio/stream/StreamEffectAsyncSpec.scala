@@ -12,6 +12,8 @@ import zio.{ IO, Promise, Ref, Task, UIO, ZIO }
 
 object StreamEffectAsyncSpec extends ZIOBaseSpec {
 
+  import ZIOTag._
+
   def spec = suite("StreamEffectAsyncSpec")(
     suite("Stream.effectAsync")(
       testM("effectAsync")(checkM(Gen.listOf(Gen.anyInt)) { list =>
@@ -36,9 +38,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
         } yield assert(result)(equalTo(Nil))
       },
       testM("effectAsyncMaybe Some")(checkM(Gen.listOf(Gen.anyInt)) { list =>
-        val s = Stream.effectAsyncMaybe[Throwable, Int] { _ =>
-          Some(Stream.fromIterable(list))
-        }
+        val s = Stream.effectAsyncMaybe[Throwable, Int](_ => Some(Stream.fromIterable(list)))
 
         assertM(s.runCollect.map(_.take(list.size)))(equalTo(list))
       }),
@@ -60,7 +60,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
             cb => {
               inParallel {
                 // 1st consumed by sink, 2-6 – in queue, 7th – back pressured
-                (1 to 7).foreach(i => cb(refCnt.set(i) *> ZIO.succeed(1)))
+                (1 to 7).foreach(i => cb(refCnt.set(i) *> ZIO.succeedNow(1)))
                 cb(refDone.set(true) *> ZIO.fail(None))
               }(global)
               None
@@ -113,7 +113,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
             cb => {
               inParallel {
                 // 1st consumed by sink, 2-6 – in queue, 7th – back pressured
-                (1 to 7).foreach(i => cb(refCnt.set(i) *> ZIO.succeed(1)))
+                (1 to 7).foreach(i => cb(refCnt.set(i) *> ZIO.succeedNow(1)))
                 cb(refDone.set(true) *> ZIO.fail(None))
               }(global)
               UIO.unit
@@ -135,7 +135,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
           fiber <- Stream
                     .effectAsyncInterrupt[Nothing, Unit] { offer =>
                       inParallel {
-                        offer(ZIO.succeed(()))
+                        offer(ZIO.succeedNow(()))
                       }(global)
                       Left(cancelled.set(true))
                     }
@@ -148,9 +148,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
         } yield assert(result)(isTrue)
       },
       testM("effectAsyncInterrupt Right")(checkM(Gen.listOf(Gen.anyInt)) { list =>
-        val s = Stream.effectAsyncInterrupt[Throwable, Int] { _ =>
-          Right(Stream.fromIterable(list))
-        }
+        val s = Stream.effectAsyncInterrupt[Throwable, Int](_ => Right(Stream.fromIterable(list)))
 
         assertM(s.take(list.size.toLong).runCollect)(equalTo(list))
       }),
@@ -161,7 +159,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
                        inParallel {
                          k(IO.fail(None))
                        }(global)
-                       Left(UIO.succeed(()))
+                       Left(UIO.succeedNow(()))
                      }
                      .runCollect
         } yield assert(result)(equalTo(Nil))
@@ -175,7 +173,7 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
             cb => {
               inParallel {
                 // 1st consumed by sink, 2-6 – in queue, 7th – back pressured
-                (1 to 7).foreach(i => cb(refCnt.set(i) *> ZIO.succeed(1)))
+                (1 to 7).foreach(i => cb(refCnt.set(i) *> ZIO.succeedNow(1)))
                 cb(refDone.set(true) *> ZIO.fail(None))
               }(global)
               Left(UIO.unit)
@@ -189,6 +187,6 @@ object StreamEffectAsyncSpec extends ZIOBaseSpec {
         } yield assert(isDone)(isFalse) &&
           assert(exit.untraced)(failsCause(containsCause(Cause.interrupt(selfId))))
       }
-    )
+    ) @@ zioTag(interruption)
   )
 }

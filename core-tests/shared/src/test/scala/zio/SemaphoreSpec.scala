@@ -8,6 +8,8 @@ import zio.test._
 
 object SemaphoreSpec extends ZIOBaseSpec {
 
+  import ZIOTag._
+
   def spec = suite("SemaphoreSpec")(
     suite("Make a Semaphore and verify that")(
       testM("`acquire` permits sequentially") {
@@ -25,14 +27,10 @@ object SemaphoreSpec extends ZIOBaseSpec {
         } yield assert(available)(forall(isLessThan(20L)))
       },
       testM("`acquireN`s can be parallel with `releaseN`s") {
-        offsettingWithPermits(
-          (s, permits) => IO.foreach(permits)(s.withPermits(_)(IO.unit)).unit
-        )
+        offsettingWithPermits((s, permits) => IO.foreach(permits)(s.withPermits(_)(IO.unit)).unit)
       },
       testM("individual `acquireN`s can be parallel with individual `releaseN`s") {
-        offsettingWithPermits(
-          (s, permits) => IO.foreachPar(permits)(s.withPermits(_)(IO.unit)).unit
-        )
+        offsettingWithPermits((s, permits) => IO.foreachPar(permits)(s.withPermits(_)(IO.unit)).unit)
       },
       testM("semaphores and fibers play ball together") {
         val n = 1L
@@ -49,7 +47,7 @@ object SemaphoreSpec extends ZIOBaseSpec {
           _       <- s.withPermit(IO.fail("fail")).either
           permits <- s.available
         } yield assert(permits)(equalTo(1L))
-      },
+      } @@ zioTag(errors),
       testM("`withPermit` does not leak fibers or permits upon cancellation") {
         val n = 1L
         for {
@@ -58,7 +56,7 @@ object SemaphoreSpec extends ZIOBaseSpec {
           _       <- fiber.interrupt
           permits <- s.available
         } yield assert(permits)(equalTo(1L))
-      },
+      } @@ zioTag(interruption),
       testM("`withPermitManaged` does not leak fibers or permits upon cancellation") {
         for {
           s       <- Semaphore.make(1L)

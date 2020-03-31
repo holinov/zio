@@ -17,41 +17,56 @@
 package zio.test.mock
 
 import zio.random.Random
-import zio.{ Chunk, Has, UIO }
-import zio.{ Chunk, UIO }
+import zio.{ Chunk, Has, UIO, URLayer, ZLayer }
 
 object MockRandom {
 
-  object nextBoolean  extends Method[Random.Service, Unit, Boolean]
-  object nextBytes    extends Method[Random.Service, Int, Chunk[Byte]]
-  object nextDouble   extends Method[Random.Service, Unit, Double]
-  object nextFloat    extends Method[Random.Service, Unit, Float]
-  object nextGaussian extends Method[Random.Service, Unit, Double]
-  object nextInt {
-    object _0 extends Method[Random.Service, Int, Int]
-    object _1 extends Method[Random.Service, Unit, Int]
+  object Between {
+    object _0 extends Method[Random, (Long, Long), Nothing, Long](compose)
+    object _1 extends Method[Random, (Int, Int), Nothing, Int](compose)
+    object _2 extends Method[Random, (Float, Float), Nothing, Float](compose)
+    object _3 extends Method[Random, (Double, Double), Nothing, Double](compose)
   }
-  object nextLong {
-    object _0 extends Method[Random.Service, Unit, Long]
-    object _1 extends Method[Random.Service, Long, Long]
+  object NextBoolean  extends Method[Random, Unit, Nothing, Boolean](compose)
+  object NextBytes    extends Method[Random, Int, Nothing, Chunk[Byte]](compose)
+  object NextDouble   extends Method[Random, Unit, Nothing, Double](compose)
+  object NextFloat    extends Method[Random, Unit, Nothing, Float](compose)
+  object NextGaussian extends Method[Random, Unit, Nothing, Double](compose)
+  object NextInt {
+    object _0 extends Method[Random, Int, Nothing, Int](compose)
+    object _1 extends Method[Random, Unit, Nothing, Int](compose)
   }
-  object nextPrintableChar extends Method[Random.Service, Unit, Char]
-  object nextString        extends Method[Random.Service, Int, String]
-  object shuffle           extends Method[Random.Service, List[Any], List[Any]]
+  object NextLong {
+    object _0 extends Method[Random, Unit, Nothing, Long](compose)
+    object _1 extends Method[Random, Long, Nothing, Long](compose)
+  }
+  object NextPrintableChar extends Method[Random, Unit, Nothing, Char](compose)
+  object NextString        extends Method[Random, Int, Nothing, String](compose)
+  object Shuffle           extends Method[Random, List[Any], Nothing, List[Any]](compose)
 
-  implicit val mockableRandom: Mockable[Random.Service] = (mock: Mock) =>
-    Has(new Random.Service {
-      val nextBoolean: UIO[Boolean]                = mock(MockRandom.nextBoolean)
-      def nextBytes(length: Int): UIO[Chunk[Byte]] = mock(MockRandom.nextBytes, length)
-      val nextDouble: UIO[Double]                  = mock(MockRandom.nextDouble)
-      val nextFloat: UIO[Float]                    = mock(MockRandom.nextFloat)
-      val nextGaussian: UIO[Double]                = mock(MockRandom.nextGaussian)
-      def nextInt(n: Int): UIO[Int]                = mock(MockRandom.nextInt._0, n)
-      val nextInt: UIO[Int]                        = mock(MockRandom.nextInt._1)
-      val nextLong: UIO[Long]                      = mock(MockRandom.nextLong._0)
-      def nextLong(n: Long): UIO[Long]             = mock(MockRandom.nextLong._1, n)
-      val nextPrintableChar: UIO[Char]             = mock(MockRandom.nextPrintableChar)
-      def nextString(length: Int)                  = mock(MockRandom.nextString, length)
-      def shuffle[A](list: List[A]): UIO[List[A]]  = mock(MockRandom.shuffle, list).asInstanceOf[UIO[List[A]]]
-    })
+  private lazy val compose: URLayer[Has[Proxy], Random] =
+    ZLayer.fromService(invoke =>
+      new Random.Service {
+        def between(minInclusive: Long, maxExclusive: Long): UIO[Long] =
+          invoke(Between._0, minInclusive, maxExclusive)
+        def between(minInclusive: Int, maxExclusive: Int): UIO[Int] =
+          invoke(Between._1, minInclusive, maxExclusive)
+        def between(minInclusive: Float, maxExclusive: Float): UIO[Float] =
+          invoke(Between._2, minInclusive, maxExclusive)
+        def between(minInclusive: Double, maxExclusive: Double): UIO[Double] =
+          invoke(Between._3, minInclusive, maxExclusive)
+        val nextBoolean: UIO[Boolean]                = invoke(NextBoolean)
+        def nextBytes(length: Int): UIO[Chunk[Byte]] = invoke(NextBytes, length)
+        val nextDouble: UIO[Double]                  = invoke(NextDouble)
+        val nextFloat: UIO[Float]                    = invoke(NextFloat)
+        val nextGaussian: UIO[Double]                = invoke(NextGaussian)
+        def nextInt(n: Int): UIO[Int]                = invoke(NextInt._0, n)
+        val nextInt: UIO[Int]                        = invoke(NextInt._1)
+        val nextLong: UIO[Long]                      = invoke(NextLong._0)
+        def nextLong(n: Long): UIO[Long]             = invoke(NextLong._1, n)
+        val nextPrintableChar: UIO[Char]             = invoke(NextPrintableChar)
+        def nextString(length: Int)                  = invoke(NextString, length)
+        def shuffle[A](list: List[A]): UIO[List[A]]  = invoke(Shuffle, list).asInstanceOf[UIO[List[A]]]
+      }
+    )
 }

@@ -9,6 +9,9 @@ import zio._
 @State(Scope.Thread)
 @BenchmarkMode(Array(Mode.Throughput))
 @OutputTimeUnit(TimeUnit.SECONDS)
+@Measurement(iterations = 15, timeUnit = TimeUnit.SECONDS, time = 10)
+@Warmup(iterations = 15, timeUnit = TimeUnit.SECONDS, time = 10)
+@Fork(1)
 class TMapOpsBenchmarks {
   import IOBenchmarks.unsafeRun
 
@@ -44,7 +47,7 @@ class TMapOpsBenchmarks {
 
   @Benchmark
   def transformM(): Unit =
-    unsafeRun(map.transformM((k, v) => STM.succeed(v).map(k -> _)).commit)
+    unsafeRun(map.transformM((k, v) => STM.succeedNow(v).map(k -> _)).commit)
 
   @Benchmark
   def removal(): Unit =

@@ -19,19 +19,20 @@ package zio.test.mock
 import java.io.IOException
 
 import zio.console.Console
-import zio.{ Has, IO, UIO }
-import zio.{ IO, UIO }
+import zio.{ Has, IO, UIO, URLayer, ZLayer }
 
 object MockConsole {
 
-  object putStr   extends Method[Console.Service, String, Unit]
-  object putStrLn extends Method[Console.Service, String, Unit]
-  object getStrLn extends Method[Console.Service, Unit, String]
+  object PutStr   extends Method[Console, String, Nothing, Unit](compose)
+  object PutStrLn extends Method[Console, String, Nothing, Unit](compose)
+  object GetStrLn extends Method[Console, Unit, IOException, String](compose)
 
-  implicit val mockableConsole: Mockable[Console.Service] = (mock: Mock) =>
-    Has(new Console.Service {
-      def putStr(line: String): UIO[Unit]   = mock(MockConsole.putStr, line)
-      def putStrLn(line: String): UIO[Unit] = mock(MockConsole.putStrLn, line)
-      val getStrLn: IO[IOException, String] = mock(MockConsole.getStrLn)
-    })
+  private lazy val compose: URLayer[Has[Proxy], Console] =
+    ZLayer.fromService(invoke =>
+      new Console.Service {
+        def putStr(line: String): UIO[Unit]   = invoke(PutStr, line)
+        def putStrLn(line: String): UIO[Unit] = invoke(PutStrLn, line)
+        val getStrLn: IO[IOException, String] = invoke(GetStrLn)
+      }
+    )
 }

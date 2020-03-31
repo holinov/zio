@@ -26,7 +26,7 @@ private[stream] final class StreamEffect[-R, +E, +A](val processEffect: ZManaged
       ZStream.Structure.Iterator(
         processEffect.map { thunk =>
           UIO.effectTotal {
-            try UIO.succeed(thunk())
+            try UIO.succeedNow(thunk())
             catch {
               case StreamEffect.Failure(e) => IO.fail(Some(e.asInstanceOf[E]))
               case StreamEffect.End        => IO.fail(None)
@@ -40,15 +40,13 @@ private[stream] final class StreamEffect[-R, +E, +A](val processEffect: ZManaged
     StreamEffect {
       self.processEffect.flatMap { thunk =>
         Managed.effectTotal { () =>
-          {
-            var b = null.asInstanceOf[B]
+          var b = null.asInstanceOf[B]
 
-            while (b == null) {
-              b = pf.applyOrElse(thunk(), (_: A) => null.asInstanceOf[B])
-            }
-
-            b
+          while (b == null) {
+            b = pf.applyOrElse(thunk(), (_: A) => null.asInstanceOf[B])
           }
+
+          b
         }
       }
     }
@@ -128,11 +126,7 @@ private[stream] final class StreamEffect[-R, +E, +A](val processEffect: ZManaged
 
   override def map[B](f0: A => B): StreamEffect[R, E, B] =
     StreamEffect {
-      self.processEffect.flatMap { thunk =>
-        Managed.effectTotal { () =>
-          f0(thunk())
-        }
-      }
+      self.processEffect.flatMap(thunk => Managed.effectTotal(() => f0(thunk())))
     }
 
   override def mapAccum[S1, B](s1: S1)(f1: (S1, A) => (S1, B)): StreamEffect[R, E, B] =
@@ -221,11 +215,19 @@ private[stream] final class StreamEffect[-R, +E, +A](val processEffect: ZManaged
   override def takeWhile(pred: A => Boolean): StreamEffect[R, E, A] =
     StreamEffect {
       self.processEffect.flatMap { thunk =>
-        Managed.effectTotal { () =>
-          {
-            val a = thunk()
-            if (pred(a)) a
-            else StreamEffect.end
+        Managed.effectTotal {
+          var done = false
+
+          () => {
+            if (done) StreamEffect.end
+            else {
+              val a = thunk()
+              if (pred(a)) a
+              else {
+                done = true
+                StreamEffect.end
+              }
+            }
           }
         }
       }
@@ -266,7 +268,7 @@ private[stream] final class StreamEffect[-R, +E, +A](val processEffect: ZManaged
                     .extractPure(s)
                     .fold(e => {
                       state = AggregateState.Initial(chunk)
-                      StreamEffect.fail[E1, B](e)
+                      StreamEffect.failure(e)
                     }, {
                       case (b, leftovers) =>
                         state = AggregateState.Initial(chunk ++ leftovers)
@@ -289,7 +291,7 @@ private[stream] final class StreamEffect[-R, +E, +A](val processEffect: ZManaged
                 case AggregateState.DirtyDone(s) =>
                   sink
                     .extractPure(s)
-                    .fold(StreamEffect.fail[E1, B], {
+                    .fold(StreamEffect.failure, {
                       case (b, _) =>
                         state = AggregateState.Done
                         b
@@ -336,21 +338,19 @@ private[stream] object StreamEffect extends Serializable {
     override def fillInStackTrace() = this
   }
 
-  def end[A]: A = throw End
+  def end: Nothing = throw End
 
-  def fail[E, A](e: E): A = throw Failure(e)
+  def failure[E](e: E): Nothing = throw Failure(e)
 
   val empty: StreamEffect[Any, Nothing, Nothing] =
     StreamEffect {
-      Managed.effectTotal { () =>
-        end
-      }
+      Managed.effectTotal(() => end)
     }
 
   def apply[R, E, A](pull: ZManaged[R, Nothing, () => A]): StreamEffect[R, E, A] =
     new StreamEffect(pull)
 
-  def fail[E](e: E): StreamEffect[Any, E, Nothing] =
+  def fail[E](e: => E): StreamEffect[Any, E, Nothing] =
     StreamEffect {
       Managed.effectTotal {
         var done = false
@@ -358,12 +358,12 @@ private[stream] object StreamEffect extends Serializable {
           if (done) end
           else {
             done = true
-            fail(e)
+            failure(e)
           }
       }
     }
 
-  def fromChunk[A](c: Chunk[A]): StreamEffect[Any, Nothing, A] =
+  def fromChunk[A](c: => Chunk[A]): StreamEffect[Any, Nothing, A] =
     StreamEffect {
       Managed.effectTotal {
         var index = 0
@@ -380,7 +380,7 @@ private[stream] object StreamEffect extends Serializable {
       }
     }
 
-  def fromIterable[A](as: Iterable[A]): StreamEffect[Any, Nothing, A] =
+  def fromIterable[A](as: => Iterable[A]): StreamEffect[Any, Nothing, A] =
     StreamEffect {
       Managed.effectTotal {
         val thunk = as.iterator
@@ -389,43 +389,100 @@ private[stream] object StreamEffect extends Serializable {
       }
     }
 
-  def fromIterator[A](iterator: Iterator[A]): StreamEffect[Any, Nothing, A] =
+  def fromIteratorTotal[A](iterator: => Iterator[A]): StreamEffect[Any, Nothing, A] =
     StreamEffect {
-      Managed.effectTotal { () =>
-        if (iterator.hasNext) iterator.next() else end
+      Managed.effectTotal {
+        val it = iterator
+
+        () => if (it.hasNext) it.next() else end
       }
     }
 
-  def fromJavaIterator[A](iterator: ju.Iterator[A]): StreamEffect[Any, Nothing, A] = {
-    val _ = iterator // Scala 2.13 wrongly warns that iterator is unused
-    fromIterator(
-      new Iterator[A] {
-        def next(): A        = iterator.next()
-        def hasNext: Boolean = iterator.hasNext
+  def fromIterator[A](iterator: => Iterator[A]): StreamEffect[Any, Throwable, A] =
+    StreamEffect {
+      Managed.fromEffect {
+        for {
+          rt <- ZIO.runtime[Any]
+          it <- IO.effectTotal {
+                 var it: Iterator[A] = null
+                 var ex: Throwable   = null
+
+                 try { it = iterator }
+                 catch {
+                   case e: Throwable if !rt.platform.fatal(e) =>
+                     ex = e
+                 }
+
+                 () => {
+                   if (it != null) {
+                     val hasNext: Boolean =
+                       try it.hasNext
+                       catch {
+                         case e: Throwable if !rt.platform.fatal(e) =>
+                           StreamEffect.failure(e)
+                       }
+
+                     if (hasNext) {
+                       try it.next()
+                       catch {
+                         case e: Throwable if !rt.platform.fatal(e) =>
+                           StreamEffect.failure(e)
+                       }
+                     } else StreamEffect.end
+                   } else if (ex != null) {
+                     val ex0 = ex
+                     ex = null
+                     StreamEffect.failure(ex0)
+                   } else StreamEffect.end
+                 }
+               }
+        } yield it
       }
-    )
+    }
+
+  def fromJavaIteratorTotal[A](iterator: => ju.Iterator[A]): StreamEffect[Any, Nothing, A] = {
+    val make = () => {
+      val it = iterator // Scala 2.13 scala.collection.Iterator has `iterator` in local scope
+      new Iterator[A] {
+        def next(): A        = it.next()
+        def hasNext: Boolean = it.hasNext
+      }
+    }
+    fromIteratorTotal(make())
+  }
+
+  def fromJavaIterator[A](iterator: => ju.Iterator[A]): StreamEffect[Any, Throwable, A] = {
+    val make = () => {
+      val it = iterator // Scala 2.13 scala.collection.Iterator has `iterator` in local scope
+      new Iterator[A] {
+        def next(): A        = it.next()
+        def hasNext: Boolean = it.hasNext
+      }
+    }
+    fromIterator(make())
   }
 
   def fromInputStream(
-    is: InputStream,
+    is: => InputStream,
     chunkSize: Int = ZStreamChunk.DefaultChunkSize
   ): StreamEffectChunk[Any, IOException, Byte] =
     StreamEffectChunk {
       StreamEffect {
         Managed.effectTotal {
-          var done = false
+          var done       = false
+          val capturedIs = is
 
           def pull(): Chunk[Byte] = {
             val buf = Array.ofDim[Byte](chunkSize)
             try {
-              val bytesRead = is.read(buf)
+              val bytesRead = capturedIs.read(buf)
               if (bytesRead < 0) {
                 done = true
                 end
               } else if (0 < bytesRead && bytesRead < buf.length) Chunk.fromArray(buf).take(bytesRead)
               else Chunk.fromArray(buf)
             } catch {
-              case e: IOException => fail(e)
+              case e: IOException => failure(e)
             }
           }
 
@@ -483,7 +540,7 @@ private[stream] object StreamEffect extends Serializable {
       }
     }
 
-  def succeed[A](a: A): StreamEffect[Any, Nothing, A] =
+  def succeed[A](a: => A): StreamEffect[Any, Nothing, A] =
     StreamEffect {
       Managed.effectTotal {
         var done = false

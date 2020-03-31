@@ -14,8 +14,8 @@ import zio.stm._
 @State(Scope.Thread)
 @BenchmarkMode(Array(Mode.Throughput))
 @OutputTimeUnit(TimeUnit.SECONDS)
-@Warmup(iterations = 5, time = 3, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 10, time = 3, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 15, timeUnit = TimeUnit.SECONDS, time = 10)
+@Warmup(iterations = 15, timeUnit = TimeUnit.SECONDS, time = 10)
 @Fork(3)
 /**
  * This benchmark offers and takes a number of items in parallel, without back pressure.
@@ -36,7 +36,7 @@ class QueueParallelBenchmark {
   def createQueues(): Unit = {
     zioQ = unsafeRun(Queue.bounded[Int](totalSize))
     fs2Q = fs2.concurrent.Queue.bounded[CIO, Int](totalSize).unsafeRunSync()
-    zioTQ = unsafeRun(TQueue.make(totalSize).commit)
+    zioTQ = unsafeRun(TQueue.bounded(totalSize).commit)
     monixQ = monix.catnap.ConcurrentQueue.bounded[MTask, Int](totalSize).runSyncUnsafe()
   }
 

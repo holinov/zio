@@ -243,9 +243,7 @@ sealed trait Cause[+E] extends Product with Serializable { self =>
     }
 
     def renderTrace(maybeTrace: Option[ZTrace]): List[String] =
-      maybeTrace.fold("No ZIO Trace available." :: Nil) { trace =>
-        "" :: lines(trace.prettyPrint)
-      }
+      maybeTrace.fold("No ZIO Trace available." :: Nil)(trace => "" :: lines(trace.prettyPrint))
 
     def renderFail(error: List[String], maybeTrace: Option[ZTrace]): Sequential =
       Sequential(
@@ -344,7 +342,13 @@ sealed trait Cause[+E] extends Product with Serializable { self =>
    */
   final def squashWith(f: E => Throwable): Throwable =
     failureOption.map(f) orElse
-      (if (interrupted) Some(new InterruptedException) else None) orElse
+      (if (interrupted)
+         Some(
+           new InterruptedException(
+             "Interrupted by fibers: " + interruptors.map(_.seqNumber.toString()).map("#" + _).mkString(", ")
+           )
+         )
+       else None) orElse
       defects.headOption getOrElse (new InterruptedException)
 
   /**
@@ -354,7 +358,7 @@ sealed trait Cause[+E] extends Product with Serializable { self =>
    * with this `Cause` "pretty printed" (in stackless mode) as the message.
    */
   final def squashTrace(implicit ev: E <:< Throwable): Throwable =
-    squashWithTrace(ev)
+    squashTraceWith(ev)
 
   /**
    * Squashes a `Cause` down to a single `Throwable`, chosen to be the
@@ -362,8 +366,37 @@ sealed trait Cause[+E] extends Product with Serializable { self =>
    * In addition, appends a new element the to `Throwable`s "caused by" chain,
    * with this `Cause` "pretty printed" (in stackless mode) as the message.
    */
-  final def squashWithTrace(f: E => Throwable): Throwable =
+  final def squashTraceWith(f: E => Throwable): Throwable =
     attachTrace(squashWith(f))
+
+  /**
+   * Remove all `Die` causes that the specified partial function is defined at,
+   * returning `Some` with the remaining causes or `None` if there are no
+   * remaining causes.
+   */
+  final def stripSomeDefects(pf: PartialFunction[Throwable, Any]): Option[Cause[E]] =
+    self match {
+      case Empty              => None
+      case Interrupt(fiberId) => Some(Interrupt(fiberId))
+      case Fail(e)            => Some(Fail(e))
+      case Die(t)             => if (pf.isDefinedAt(t)) None else Some(Die(t))
+      case Both(l, r) =>
+        (l.stripSomeDefects(pf), r.stripSomeDefects(pf)) match {
+          case (Some(l), Some(r)) => Some(Both(l, r))
+          case (Some(l), None)    => Some(l)
+          case (None, Some(r))    => Some(r)
+          case (None, None)       => None
+        }
+      case Then(l, r) =>
+        (l.stripSomeDefects(pf), r.stripSomeDefects(pf)) match {
+          case (Some(l), Some(r)) => Some(Then(l, r))
+          case (Some(l), None)    => Some(l)
+          case (None, Some(r))    => Some(r)
+          case (None, None)       => None
+        }
+      case Traced(c, trace) => c.stripSomeDefects(pf).map(Traced(_, trace))
+      case Meta(c, data)    => c.stripSomeDefects(pf).map(Meta(_, data))
+    }
 
   /**
    * Remove all `Fail` and `Interrupt` nodes from this `Cause`,
@@ -406,7 +439,7 @@ sealed trait Cause[+E] extends Product with Serializable { self =>
       }
       .reverse
 
-  private def find[Z](f: PartialFunction[Cause[E], Z]): Option[Z] = {
+  final def find[Z](f: PartialFunction[Cause[E], Z]): Option[Z] = {
     @tailrec
     def loop(cause: Cause[E], stack: List[Cause[E]]): Option[Z] =
       f.lift(cause) match {
@@ -427,7 +460,7 @@ sealed trait Cause[+E] extends Product with Serializable { self =>
     loop(self, Nil)
   }
 
-  private def foldLeft[Z](z: Z)(f: PartialFunction[(Z, Cause[E]), Z]): Z = {
+  final def foldLeft[Z](z: Z)(f: PartialFunction[(Z, Cause[E]), Z]): Z = {
     @tailrec
     def loop(z: Z, cause: Cause[E], stack: List[Cause[E]]): Z =
       (f.applyOrElse[(Z, Cause[E]), Z](z -> cause, _ => z), cause) match {

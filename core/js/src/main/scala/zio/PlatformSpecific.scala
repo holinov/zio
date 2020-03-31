@@ -19,27 +19,27 @@ package zio
 import zio.clock.Clock
 import zio.console.Console
 import zio.random.Random
-import zio.scheduler.Scheduler
 import zio.system.System
 
 private[zio] trait PlatformSpecific {
-  type ZEnv = Clock with Console with System with Random with Scheduler
+  type ZEnv = Clock with Console with System with Random
 
   object ZEnv {
-    val live: ZLayer.NoDeps[Nothing, ZEnv] =
-      (Scheduler.live >>> Clock.live) ++ Console.live ++ System.live ++ Random.live ++ Scheduler.live
-  }
 
-  type Tagged[A] = scala.reflect.ClassTag[A]
-  type TagType   = scala.reflect.ClassTag[_]
+    private[zio] object Services {
+      val live: ZEnv =
+        Has.allOf[Clock.Service, Console.Service, System.Service, Random.Service](
+          Clock.Service.live,
+          Console.Service.live,
+          System.Service.live,
+          Random.Service.live
+        )
+    }
 
-  private[zio] def taggedIsSubtype[A, B](left: TagType, right: TagType): Boolean =
-    right.runtimeClass.isAssignableFrom(left.runtimeClass)
+    val any: ZLayer[ZEnv, Nothing, ZEnv] =
+      ZLayer.requires[ZEnv]
 
-  private[zio] def taggedTagType[A](tagged: Tagged[A]): TagType = tagged
-
-  private[zio] def taggedGetHasServices[A](t: TagType): Set[TagType] = {
-    val _ = t
-    Set()
+    val live: Layer[Nothing, ZEnv] =
+      Clock.live ++ Console.live ++ System.live ++ Random.live
   }
 }

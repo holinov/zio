@@ -69,10 +69,15 @@ final case class Gen[-R, +A](sample: ZStream[R, Nothing, Sample[R, A]]) { self =
    * }}}
    */
   def filter(f: A => Boolean): Gen[R, A] = Gen {
-    sample.flatMap { sample =>
-      if (f(sample.value)) sample.filter(f) else ZStream.empty
-    }
+    sample.flatMap(sample => if (f(sample.value)) sample.filter(f) else ZStream.empty)
   }
+
+  /**
+   * Filters the values produced by this generator, discarding any values that
+   * meet the specified predicate.
+   */
+  def filterNot(f: A => Boolean): Gen[R, A] =
+    filter(a => !(f(a)))
 
   def withFilter(f: A => Boolean): Gen[R, A] = filter(f)
 
@@ -94,7 +99,7 @@ final case class Gen[-R, +A](sample: ZStream[R, Nothing, Sample[R, A]]) { self =
    * Maps an effectual function over a generator.
    */
   def mapM[R1 <: R, B](f: A => ZIO[R1, Nothing, B]): Gen[R1, B] =
-    Gen(sample.mapM(_.traverse(f)))
+    Gen(sample.mapM(_.foreach(f)))
 
   /**
    * Discards the shrinker for this generator.
@@ -291,7 +296,7 @@ object Gen extends GenZIO with FunctionVariants with TimeVariants {
    * A constant generator of the specified sample.
    */
   def constSample[R, A](sample: => Sample[R, A]): Gen[R, A] =
-    fromEffectSample(ZIO.succeed(sample))
+    fromEffectSample(ZIO.succeedNow(sample))
 
   /**
    * Composes the specified generators to create a cartesian product of
@@ -442,6 +447,30 @@ object Gen extends GenZIO with FunctionVariants with TimeVariants {
     }
 
   /**
+   * A sized generator of maps.
+   */
+  def mapOf[R <: Random with Sized, A, B](key: Gen[R, A], value: Gen[R, B]): Gen[R, Map[A, B]] =
+    small(mapOfN(_)(key, value))
+
+  /**
+   * A sized generator of non-empty maps.
+   */
+  def mapOf1[R <: Random with Sized, A, B](key: Gen[R, A], value: Gen[R, B]): Gen[R, Map[A, B]] =
+    small(mapOfN(_)(key, value), 1)
+
+  /**
+   * A generator of maps of the specified size.
+   */
+  def mapOfN[R <: Random, A, B](n: Int)(key: Gen[R, A], value: Gen[R, B]): Gen[R, Map[A, B]] =
+    setOfN(n)(key).crossWith(listOfN(n)(value))(_.zip(_).toMap)
+
+  /**
+   * A generator of maps whose size falls within the specified bounds.
+   */
+  def mapOfBounded[R <: Random, A, B](min: Int, max: Int)(key: Gen[R, A], value: Gen[R, B]): Gen[R, Map[A, B]] =
+    bounded(min, max)(mapOfN(_)(key, value))
+
+  /**
    * A sized generator that uses an exponential distribution of size values.
    * The majority of sizes will be towards the lower end of the range but some
    * larger sizes will be generated as well.
@@ -494,6 +523,35 @@ object Gen extends GenZIO with FunctionVariants with TimeVariants {
    */
   val printableChar: Gen[Random, Char] =
     char(33, 126)
+
+  /**
+   * A sized generator of sets.
+   */
+  def setOf[R <: Random with Sized, A](gen: Gen[R, A]): Gen[R, Set[A]] =
+    small(setOfN(_)(gen))
+
+  /**
+   * A sized generator of non-empty sets.
+   */
+  def setOf1[R <: Random with Sized, A](gen: Gen[R, A]): Gen[R, Set[A]] =
+    small(setOfN(_)(gen), 1)
+
+  /**
+   * A generator of sets of the specified size.
+   */
+  def setOfN[R <: Random, A](n: Int)(gen: Gen[R, A]): Gen[R, Set[A]] =
+    List.fill(n)(gen).foldLeft[Gen[R, Set[A]]](const(Set.empty)) { (acc, gen) =>
+      for {
+        set  <- acc
+        elem <- gen.filterNot(set)
+      } yield set + elem
+    }
+
+  /**
+   * A generator of sets whose size falls within the specified bounds.
+   */
+  def setOfBounded[R <: Random, A](min: Int, max: Int)(g: Gen[R, A]): Gen[R, Set[A]] =
+    bounded(min, max)(setOfN(_)(g))
 
   /**
    * A generator of short values inside the specified range: [start, end].

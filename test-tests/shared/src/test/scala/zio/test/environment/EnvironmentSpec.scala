@@ -3,8 +3,10 @@ package zio.test.environment
 import java.util.concurrent.TimeUnit
 
 import zio._
+import zio.clock._
 import zio.duration._
 import zio.test.Assertion._
+import zio.test.TestAspect._
 import zio.test._
 
 object EnvironmentSpec extends ZIOBaseSpec {
@@ -13,6 +15,7 @@ object EnvironmentSpec extends ZIOBaseSpec {
     testM("Clock returns time when it is set") {
       for {
         _    <- TestClock.setTime(1.millis)
+        _    <- clock.sleep(1.millis)
         time <- clock.currentTime(TimeUnit.MILLISECONDS)
       } yield assert(time)(equalTo(1L))
     },
@@ -22,7 +25,7 @@ object EnvironmentSpec extends ZIOBaseSpec {
         _      <- console.putStrLn("Second line")
         output <- TestConsole.output
       } yield assert(output)(equalTo(Vector("First line\n", "Second line\n")))
-    },
+    } @@ silent,
     testM("Console reads line from input") {
       for {
         _      <- TestConsole.feedLines("Input 1", "Input 2")
@@ -39,14 +42,11 @@ object EnvironmentSpec extends ZIOBaseSpec {
         j <- random.nextInt
       } yield !assert(i)(equalTo(j))
     },
-    /*Live clock is used to seed random number generator;
-            Node.js only has 1ms resolution so need to wait at least that long to avoid flakiness on ScalaJS*/
-    testM("Check different copies of TestEnvironment are seeded with different seeds") {
+    testM("Random is deterministic") {
       for {
-        i <- Live.live(random.nextInt.provideLayer(TestRandom.random))
-        _ <- Live.live(clock.sleep(1.millisecond))
-        j <- Live.live(random.nextInt.provideLayer(TestRandom.random))
-      } yield !assert(i)(equalTo(j))
+        i <- random.nextInt.provideLayer(testEnvironment)
+        j <- random.nextInt.provideLayer(testEnvironment)
+      } yield assert(i)(equalTo(j))
     },
     testM("System returns an environment variable when it is set") {
       for {
@@ -65,6 +65,11 @@ object EnvironmentSpec extends ZIOBaseSpec {
         _       <- TestSystem.setLineSeparator(",")
         lineSep <- system.lineSeparator
       } yield assert(lineSep)(equalTo(","))
-    }
+    },
+    testM("clock service can be overwritten") {
+      val withLiveClock = TestEnvironment.live ++ Clock.live
+      val time          = clock.nanoTime.provideLayer(withLiveClock)
+      assertM(time)(isGreaterThan(0L))
+    } @@ nonFlaky
   )
 }

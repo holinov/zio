@@ -1,15 +1,14 @@
 import sbt._
 import Keys._
 import explicitdeps.ExplicitDepsPlugin.autoImport._
-import sbtcrossproject.Platform
 import sbtcrossproject.CrossPlugin.autoImport._
+import org.portablescala.sbtplatformdeps.PlatformDepsPlugin.autoImport._
 import sbtbuildinfo._
 import dotty.tools.sbtplugin.DottyPlugin.autoImport._
 import BuildInfoKeys._
 import scalafix.sbt.ScalafixPlugin.autoImport.scalafixSemanticdb
 
 object BuildHelper {
-  val testDeps = Seq("org.scalacheck" %% "scalacheck" % "1.14.3" % "test")
 
   private val stdOptions = Seq(
     "-deprecation",
@@ -41,7 +40,7 @@ object BuildHelper {
     sys.props.get(property).map(_.toBoolean).getOrElse(default)
 
   private def customOptions =
-    if (propertyFlag("fatal.warnings", false)) {
+    if (propertyFlag("fatal.warnings", true)) {
       Seq("-Xfatal-warnings")
     } else {
       Nil
@@ -54,7 +53,7 @@ object BuildHelper {
       buildInfoObject := "BuildInfo"
     )
 
-  val dottyVersion = "0.22.0-bin-20200116-9ab1842-NIGHTLY"
+  val dottyVersion = "0.23.0-RC1"
 
   val dottySettings = Seq(
     // Keep this consistent with the version in .circleci/config.yml
@@ -87,7 +86,10 @@ object BuildHelper {
   val scalaReflectSettings = Seq(
     libraryDependencies ++=
       (if (isDotty.value) Seq()
-       else Seq("org.scala-lang" % "scala-reflect" % scalaVersion.value))
+       else
+         Seq(
+           "dev.zio" %%% "izumi-reflect" % "0.12.0-M0"
+         ))
   )
 
   // Keep this consistent with the version in .core-tests/shared/src/test/scala/REPLSpec.scala
@@ -215,13 +217,12 @@ object BuildHelper {
   def stdSettings(prjName: String) = Seq(
     name := s"$prjName",
     scalacOptions := stdOptions,
-    crossScalaVersions := Seq("2.12.10", "2.13.1", "2.11.12"),
+    crossScalaVersions := Seq("2.12.10", "2.11.12", "2.13.1"),
     scalaVersion in ThisBuild := crossScalaVersions.value.head,
     scalacOptions := stdOptions ++ extraOptions(scalaVersion.value, optimize = !isSnapshot.value),
-    libraryDependencies ++= testDeps,
     libraryDependencies ++= {
       if (isDotty.value)
-        Seq("com.github.ghik" % "silencer-lib_2.13.1" % "1.4.4" % Provided)
+        Seq("com.github.ghik" % "silencer-lib_2.13.1" % "1.6.0" % Provided)
       else
         Seq(
           "com.github.ghik" % "silencer-lib" % "1.4.4" % Provided cross CrossVersion.full,
@@ -248,7 +249,8 @@ object BuildHelper {
             Seq(file(sourceDirectory.value.getPath + "/main/scala-2.12+")),
             CrossType.Full.sharedSrcDir(baseDirectory.value, "main").toList.map(f => file(f.getPath + "-2.12+")),
             CrossType.Full.sharedSrcDir(baseDirectory.value, "test").toList.map(f => file(f.getPath + "-2.12+")),
-            CrossType.Full.sharedSrcDir(baseDirectory.value, "main").toList.map(f => file(f.getPath + "-2.x"))
+            CrossType.Full.sharedSrcDir(baseDirectory.value, "main").toList.map(f => file(f.getPath + "-2.x")),
+            CrossType.Full.sharedSrcDir(baseDirectory.value, "main").toList.map(f => file(f.getPath + "-2.12-2.13"))
           ).flatten
         case _ =>
           if (isDotty.value)
@@ -290,7 +292,7 @@ object BuildHelper {
     }
   )
 
-  def macroSettings = Seq(
+  def macroExpansionSettings = Seq(
     scalacOptions ++= {
       CrossVersion.partialVersion(scalaVersion.value) match {
         case Some((2, 13)) => Seq("-Ymacro-annotations")
@@ -304,6 +306,23 @@ object BuildHelper {
         case _ => Seq.empty
       }
     }
+  )
+
+  def macroDefinitionSettings = Seq(
+    scalacOptions += "-language:experimental.macros",
+    libraryDependencies ++=
+      Seq("org.portable-scala" %%% "portable-scala-reflect" % "1.0.0") ++ {
+        if (isDotty.value) Seq()
+        else
+          Seq(
+            "org.scala-lang" % "scala-reflect"  % scalaVersion.value % "provided",
+            "org.scala-lang" % "scala-compiler" % scalaVersion.value % "provided"
+          )
+      }
+  )
+
+  def testJsSettings = Seq(
+    libraryDependencies += "io.github.cquiroz" %%% "scala-java-time" % "2.0.0-RC5" % Test
   )
 
   def welcomeMessage = onLoadMessage := {

@@ -28,10 +28,9 @@ println(s"""```""")
 Your application can extend `App`, which provides a complete runtime system and allows you to write your whole program using ZIO:
 
 ```scala mdoc:silent
-import zio.App
 import zio.console._
 
-object MyApp extends App {
+object MyApp extends zio.App {
 
   def run(args: List[String]) =
     myAppLogic.fold(_ => 1, _ => 0)
@@ -64,7 +63,7 @@ If you are integrating ZIO into an existing application, using dependency inject
 import zio._
 
 object IntegrationExample {
-  val runtime = new DefaultRuntime {}
+  val runtime = Runtime.default
 
   runtime.unsafeRun(Task(println("Hello World!")))
 }
@@ -93,7 +92,7 @@ putStrLn("Hello World")
 If you need to read input from the console, you can use `getStrLn`:
 
 ```scala mdoc
-val echo = getStrLn flatMap putStrLn
+val echo = getStrLn.flatMap(line => putStrLn(line))
 ```
 
 ## Learning More

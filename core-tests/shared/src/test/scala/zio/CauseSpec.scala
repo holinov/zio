@@ -7,17 +7,15 @@ import zio.test._
 
 object CauseSpec extends ZIOBaseSpec {
 
+  import ZIOTag._
+
   def spec = suite("CauseSpec")(
     suite("Cause")(
       testM("`Cause#died` and `Cause#stripFailures` are consistent") {
-        check(causes) { c =>
-          assert(c.stripFailures)(if (c.died) isSome(anything) else isNone)
-        }
+        check(causes)(c => assert(c.stripFailures)(if (c.died) isSome(anything) else isNone))
       },
       testM("`Cause.equals` is symmetric") {
-        check(causes, causes) { (a, b) =>
-          assert(a == b)(equalTo(b == a))
-        }
+        check(causes, causes)((a, b) => assert(a == b)(equalTo(b == a)))
       },
       testM("`Cause.equals` and `Cause.hashCode` satisfy the contract") {
         check(equalCauses) {
@@ -26,9 +24,7 @@ object CauseSpec extends ZIOBaseSpec {
         }
       },
       testM("`Cause#untraced` removes all traces") {
-        check(causes) { c =>
-          assert(c.untraced.traces.headOption)(isNone)
-        }
+        check(causes)(c => assert(c.untraced.traces.headOption)(isNone))
       },
       zio.test.test("`Cause.failures is stack safe") {
         val n     = 100000
@@ -64,9 +60,7 @@ object CauseSpec extends ZIOBaseSpec {
         }
       },
       testM("`Both.equals` satisfies commutativity") {
-        check(causes, causes) { (a, b) =>
-          assert(Both(a, b))(equalTo(Both(b, a)))
-        }
+        check(causes, causes)((a, b) => assert(Both(a, b))(equalTo(Both(b, a))))
       }
     ),
     suite("Meta")(
@@ -77,9 +71,7 @@ object CauseSpec extends ZIOBaseSpec {
         }
       },
       testM("`Meta` is excluded from hashCode") {
-        check(causes) { c =>
-          assert(Cause.stackless(c).hashCode)(equalTo(c.hashCode))
-        }
+        check(causes)(c => assert(Cause.stackless(c).hashCode)(equalTo(c.hashCode)))
       }
     ),
     suite("Empty")(
@@ -98,14 +90,10 @@ object CauseSpec extends ZIOBaseSpec {
     ),
     suite("Monad Laws:")(
       testM("Left identity") {
-        check(causes) { c =>
-          assert(c.flatMap(Cause.fail))(equalTo(c))
-        }
+        check(causes)(c => assert(c.flatMap(Cause.fail))(equalTo(c)))
       },
       testM("Right identity") {
-        check(errors, errorCauseFunctions) { (e, f) =>
-          assert(Cause.fail(e).flatMap(f))(equalTo(f(e)))
-        }
+        check(errors, errorCauseFunctions)((e, f) => assert(Cause.fail(e).flatMap(f))(equalTo(f(e))))
       },
       testM("Associativity") {
         check(causes, errorCauseFunctions, errorCauseFunctions) { (c, f, g) =>
@@ -140,7 +128,7 @@ object CauseSpec extends ZIOBaseSpec {
           }
           assert(result)(isTrue)
         }
-      },
+      } @@ zioTag(interruption),
       testM("Traced") {
         check(causes) { cause1 =>
           val trace1 = ZTrace(Fiber.Id(0L, 0L), Nil, Nil, None)
@@ -190,7 +178,7 @@ object CauseSpec extends ZIOBaseSpec {
         }
       }
     ),
-    suite("squashWithTrace")(
+    suite("squashTraceWith")(
       testM("converts Cause to original exception with ZTraces in root cause") {
         val throwable = (Gen.alphaNumericString <*> Gen.alphaNumericString).flatMap {
           case (msg1, msg2) =>
@@ -209,7 +197,7 @@ object CauseSpec extends ZIOBaseSpec {
           val causeMessage     = e.getCause.getMessage
           val throwableMessage = e.getMessage
           val renderedCause    = Cause.stackless(cause).prettyPrint
-          val squashed         = cause.squashWithTrace(identity)
+          val squashed         = cause.squashTraceWith(identity)
 
           assert(squashed)(
             equalTo(e) &&
@@ -222,6 +210,20 @@ object CauseSpec extends ZIOBaseSpec {
               )
           )
         }
+      }
+    ),
+    suite("stripSomeDefects")(
+      zio.test.test("returns `Some` with remaining causes") {
+        val c1       = Cause.die(new NumberFormatException("can't parse to int"))
+        val c2       = Cause.die(new ArithmeticException("division by zero"))
+        val cause    = Cause.Both(c1, c2)
+        val stripped = cause.stripSomeDefects { case _: NumberFormatException => }
+        assert(stripped)(isSome(equalTo(c2)))
+      },
+      zio.test.test("returns `None` if there are no remaining causes") {
+        val cause    = Cause.die(new NumberFormatException("can't parse to int"))
+        val stripped = cause.stripSomeDefects { case _: NumberFormatException => }
+        assert(stripped)(isNone)
       }
     )
   )

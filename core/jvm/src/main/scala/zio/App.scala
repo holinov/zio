@@ -37,7 +37,7 @@ package zio
  * }
  * }}}
  */
-trait App extends DefaultRuntime {
+trait App extends BootstrapRuntime {
 
   /**
    * The main function of the application, which will be passed the command-line
@@ -61,7 +61,7 @@ trait App extends DefaultRuntime {
               }))
           result <- fiber.join
           _      <- fiber.interrupt
-        } yield result).provideLayer(ZEnv.live)
+        } yield result)
       )
     )
     catch { case _: SecurityException => }
