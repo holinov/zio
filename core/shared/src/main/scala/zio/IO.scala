@@ -13,12 +13,6 @@ object IO {
     ZIO.absolve(v)
 
   /**
-   * @see See [[zio.ZIO.adopt]]
-   */
-  def adopt(fiber: Fiber[Any, Any]): UIO[Boolean] =
-    ZIO.adopt(fiber)
-
-  /**
    * @see See [[zio.ZIO.allowInterrupt]]
    */
   def allowInterrupt: UIO[Unit] =
@@ -28,11 +22,6 @@ object IO {
    * @see See [[zio.ZIO.apply]]
    */
   def apply[A](a: => A): Task[A] = ZIO.apply(a)
-
-  /**
-   * @see [[zio.ZIO.awaitAllChildren]]
-   */
-  val awaitAllChildren: UIO[Unit] = ZIO.awaitAllChildren
 
   /**
    * @see See bracket [[zio.ZIO]]
@@ -75,9 +64,10 @@ object IO {
     ZIO.checkTraced(f)
 
   /**
-   * @see See [[zio.ZIO.children]]
+   * @see See [[zio.ZIO.collect]]
    */
-  def children: UIO[Iterable[Fiber[Any, Any]]] = ZIO.children
+  def collect[R, E, A, B](in: Iterable[A])(f: A => IO[Option[E], B]): IO[E, List[B]] =
+    ZIO.collect(in)(f)
 
   /**
    * @see See [[[zio.ZIO.collectAll[R,E,A](in:Iterable*]]]
@@ -89,6 +79,12 @@ object IO {
    * @see See [[[zio.ZIO.collectAll[R,E,A](in:zio\.Chunk*]]]
    */
   def collectAll[E, A](in: Chunk[IO[E, A]]): IO[E, Chunk[A]] =
+    ZIO.collectAll(in)
+
+  /**
+   * @see See [[[zio.ZIO.collectAll[R,E,A](in:zio\.NonEmptyChunk*]]]
+   */
+  def collectAll[E, A](in: NonEmptyChunk[IO[E, A]]): IO[E, NonEmptyChunk[A]] =
     ZIO.collectAll(in)
 
   /**
@@ -113,6 +109,12 @@ object IO {
    * @see See [[[zio.ZIO.collectAllPar[R,E,A](as:zio\.Chunk*]]]
    */
   def collectAllPar[E, A](as: Chunk[IO[E, A]]): IO[E, Chunk[A]] =
+    ZIO.collectAllPar(as)
+
+  /**
+   * @see See [[[zio.ZIO.collectAllPar[R,E,A](as:zio\.NonEmptyChunk*]]]
+   */
+  def collectAllPar[E, A](as: NonEmptyChunk[IO[E, A]]): IO[E, NonEmptyChunk[A]] =
     ZIO.collectAllPar(as)
 
   /**
@@ -176,6 +178,18 @@ object IO {
     ZIO.collectAllWithParN(n)(as)(f)
 
   /**
+   * @see See [[zio.ZIO.collectPar]]
+   */
+  def collectPar[R, E, A, B](in: Iterable[A])(f: A => IO[Option[E], B]): IO[E, List[B]] =
+    ZIO.collectPar(in)(f)
+
+  /**
+   * @see See [[zio.ZIO.collectParN]]
+   */
+  def collectParN[R, E, A, B](n: Int)(in: Iterable[A])(f: A => IO[Option[E], B]): IO[E, List[B]] =
+    ZIO.collectParN(n)(in)(f)
+
+  /**
    * @see See [[zio.ZIO.descriptor]]
    */
   def descriptor: UIO[Fiber.Descriptor] = ZIO.descriptor
@@ -195,11 +209,6 @@ object IO {
    * @see See [[zio.ZIO.dieMessage]]
    */
   def dieMessage(message: => String): UIO[Nothing] = ZIO.dieMessage(message)
-
-  /**
-   * @see See [[zio.ZIO.disown]]
-   */
-  def disown(fiber: Fiber[Any, Any]): UIO[Boolean] = ZIO.disown(fiber)
 
   /**
    * @see See [[zio.ZIO.done]]
@@ -284,6 +293,24 @@ object IO {
     ZIO.filter(as)(f)
 
   /**
+   * @see [[zio.ZIO.filterPar]]
+   */
+  def filterPar[E, A](as: Iterable[A])(f: A => IO[E, Boolean]): IO[E, List[A]] =
+    ZIO.filterPar(as)(f)
+
+  /**
+   * @see [[zio.ZIO.filterNot]]
+   */
+  def filterNot[E, A](as: Iterable[A])(f: A => IO[E, Boolean]): IO[E, List[A]] =
+    ZIO.filterNot(as)(f)
+
+  /**
+   * @see [[zio.ZIO.filterNotPar]]
+   */
+  def filterNotPar[E, A](as: Iterable[A])(f: A => IO[E, Boolean]): IO[E, List[A]] =
+    ZIO.filterNotPar(as)(f)
+
+  /**
    * @see See [[zio.ZIO.firstSuccessOf]]
    */
   def firstSuccessOf[E, A](
@@ -328,6 +355,18 @@ object IO {
     ZIO.foreach(in)(f)
 
   /**
+   * @see See [[[zio.ZIO.foreach[R,E,A,B](in:zio\.NonEmptyChunk*]]]
+   */
+  def foreach[E, A, B](in: NonEmptyChunk[A])(f: A => IO[E, B]): IO[E, NonEmptyChunk[B]] =
+    ZIO.foreach(in)(f)
+
+  /**
+   * @see See [[zio.ZIO.foreachExec]]
+   */
+  final def foreachExec[E, A, B](as: Iterable[A])(exec: ExecutionStrategy)(f: A => IO[E, B]): IO[E, List[B]] =
+    ZIO.foreachExec(as)(exec)(f)
+
+  /**
    * @see See [[[zio.ZIO.foreachPar[R,E,A,B](as:Iterable*]]]
    */
   def foreachPar[E, A, B](as: Iterable[A])(fn: A => IO[E, B]): IO[E, List[B]] =
@@ -337,6 +376,12 @@ object IO {
    * @see See [[[zio.ZIO.foreachPar[R,E,A,B](as:zio\.Chunk*]]]
    */
   def foreachPar[E, A, B](as: Chunk[A])(fn: A => IO[E, B]): IO[E, Chunk[B]] =
+    ZIO.foreachPar(as)(fn)
+
+  /**
+   * @see See [[[zio.ZIO.foreachPar[R,E,A,B](as:zio\.NonEmptyChunk*]]]
+   */
+  def foreachPar[E, A, B](as: NonEmptyChunk[A])(fn: A => IO[E, B]): IO[E, NonEmptyChunk[B]] =
     ZIO.foreachPar(as)(fn)
 
   /**
@@ -436,7 +481,7 @@ object IO {
   /**
    * @see See [[zio.ZIO.fromOption]]
    */
-  def fromOption[A](v: => Option[A]): IO[Unit, A] = ZIO.fromOption(v)
+  def fromOption[A](v: => Option[A]): IO[Option[Nothing], A] = ZIO.fromOption(v)
 
   /**
    * @see See [[zio.ZIO.fromTry]]
@@ -464,17 +509,12 @@ object IO {
    * @see [[zio.ZIO.ifM]]
    */
   def ifM[E](b: IO[E, Boolean]): ZIO.IfM[Any, E] =
-    new ZIO.IfM(b)
+    ZIO.ifM(b)
 
   /**
    * @see See [[zio.ZIO.interrupt]]
    */
   val interrupt: UIO[Nothing] = ZIO.interrupt
-
-  /**
-   * @see See [zio.ZIO.interruptAllChildren]
-   */
-  def interruptAllChildren: UIO[Unit] = ZIO.children.flatMap(Fiber.interruptAll(_))
 
   /**
    * @see See [[zio.ZIO.interruptAs]]
@@ -561,6 +601,12 @@ object IO {
     f: (A, B, C, D) => F
   ): IO[E, F] =
     ZIO.mapParN(io1, io2, io3, io4)(f)
+
+  /**
+   * @see See [[zio.ZIO.memoize]]
+   */
+  def memoize[E, A, B](f: A => IO[E, B]): UIO[A => IO[E, B]] =
+    ZIO.memoize(f)
 
   /**
    * @see See [[zio.ZIO.mergeAll]]
@@ -691,6 +737,18 @@ object IO {
     ZIO.uninterruptibleMask(k)
 
   /**
+   * @see See [[zio.ZIO.unless]]
+   */
+  def unless[E](b: => Boolean)(zio: => IO[E, Any]): IO[E, Unit] =
+    ZIO.unless(b)(zio)
+
+  /**
+   * @see See [[zio.ZIO.unlessM]]
+   */
+  def unlessM[E](b: IO[E, Boolean]): ZIO.UnlessM[Any, E] =
+    ZIO.unlessM(b)
+
+  /**
    * @see See [[zio.ZIO.unsandbox]]
    */
   def unsandbox[E, A](v: IO[Cause[E], A]): IO[E, A] = ZIO.unsandbox(v)
@@ -745,8 +803,8 @@ object IO {
   /**
    * @see See [[zio.ZIO.whenM]]
    */
-  def whenM[E](b: IO[E, Boolean])(io: => IO[E, Any]): IO[E, Unit] =
-    ZIO.whenM(b)(io)
+  def whenM[E](b: IO[E, Boolean]): ZIO.WhenM[Any, E] =
+    ZIO.whenM(b)
 
   /**
    * @see See [[zio.ZIO.yieldNow]]

@@ -29,7 +29,7 @@ private[zio] object javaz {
     Task.effectSuspendTotalWith[T] { (p, _) =>
       Task.effectAsync { k =>
         val handler = new CompletionHandler[T, Any] {
-          def completed(result: T, u: Any): Unit = k(Task.succeed(result))
+          def completed(result: T, u: Any): Unit = k(Task.succeedNow(result))
 
           def failed(t: Throwable, u: Any): Unit = t match {
             case e if !p.fatal(e) => k(Task.fail(e))
@@ -61,32 +61,33 @@ private[zio] object javaz {
       Task.succeedNow(f.get())
     } catch catchFromGet(isFatal)
 
-  def fromCompletionStage[A](thunk: => CompletionStage[A]): Task[A] = {
-    lazy val cs: CompletionStage[A] = thunk
-    Task.effectSuspendTotalWith { (p, _) =>
-      val cf = cs.toCompletableFuture
-      if (cf.isDone) {
-        unwrapDone(p.fatal)(cf)
-      } else {
-        Task.effectAsync { cb =>
-          cs.handle[Unit] { (v: A, t: Throwable) =>
-            val io = Option(t).fold[Task[A]](Task.succeed(v)) { t =>
-              catchFromGet(p.fatal).lift(t).getOrElse(Task.die(t))
+  def fromCompletionStage[A](thunk: => CompletionStage[A]): Task[A] =
+    Task.effect(thunk).flatMap { cs =>
+      Task.effectSuspendTotalWith { (p, _) =>
+        val cf = cs.toCompletableFuture
+        if (cf.isDone) {
+          unwrapDone(p.fatal)(cf)
+        } else {
+          Task.effectAsync { cb =>
+            cs.handle[Unit] { (v: A, t: Throwable) =>
+              val io = Option(t).fold[Task[A]](Task.succeed(v)) { t =>
+                catchFromGet(p.fatal).lift(t).getOrElse(Task.die(t))
+              }
+              cb(io)
             }
-            cb(io)
           }
         }
       }
     }
-  }
 
   /** WARNING: this uses the blocking Future#get, consider using `fromCompletionStage` */
   def fromFutureJava[A](future: => Future[A]): RIO[Blocking, A] =
     RIO.effectSuspendTotalWith { (p, _) =>
-      if (future.isDone) {
-        unwrapDone(p.fatal)(future)
+      val capturedFuture: Future[A] = future
+      if (capturedFuture.isDone) {
+        unwrapDone(p.fatal)(capturedFuture)
       } else {
-        blocking(Task.effectSuspend(unwrapDone(p.fatal)(future)))
+        blocking(Task.effectSuspend(unwrapDone(p.fatal)(capturedFuture)))
       }
     }
 

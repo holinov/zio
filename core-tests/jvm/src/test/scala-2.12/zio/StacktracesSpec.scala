@@ -165,7 +165,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
       }
     },
     testM("blocking trace") {
-      val io: ZIO[Blocking, Throwable, Unit] = for {
+      val io: RIO[Blocking, Unit] = for {
         trace <- blockingTrace
       } yield trace
 
@@ -310,13 +310,13 @@ object StackTracesSpec extends DefaultRunnableSpec {
 
   def show(cause: Cause[Any]): Unit = if (debug) println(cause.prettyPrint)
 
-  def basicTest: ZIO[Any, Nothing, ZTrace] =
+  def basicTest: UIO[ZTrace] =
     for {
       _     <- ZIO.unit
       trace <- ZIO.trace
     } yield trace
 
-  def foreachTest: ZIO[Any, Nothing, ZTrace] = {
+  def foreachTest: UIO[ZTrace] = {
     import foreachTraceFixture._
     for {
       _     <- effectTotal
@@ -342,7 +342,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
       t2 <- ZIO.trace
     } yield (t1, t2)
 
-  def foreachParFail: ZIO[Any, Nothing, Unit] =
+  def foreachParFail: UIO[Unit] =
     for {
       _ <- ZIO.foreachPar(1 to 10)(i => (if (i >= 7) UIO(i / 0) else UIO(i / 10)))
     } yield ()
@@ -352,7 +352,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
       _ <- ZIO.foreachParN(4)(1 to 10)(i => (if (i >= 7) UIO(i / 0) else UIO(i / 10)))
     } yield ()
 
-  def leftAssociativeFold(n: Int): ZIO[Any, Nothing, ZTrace] =
+  def leftAssociativeFold(n: Int): UIO[ZTrace] =
     (1 to n)
       .foldLeft(ZIO.unit *> ZIO.unit) { (acc, _) =>
         acc *> UIO(())
@@ -478,7 +478,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
       _ <- ZIO.unit
       _ <- ZIO.unit
       untraceableFiber <- (ZIO.unit *> (ZIO.unit *> ZIO.unit *> ZIO.dieMessage("error!") *> ZIO.checkTraced(
-                           ZIO.succeedNow
+                           ZIO.succeed(_)
                          )).fork).untraced
       tracingStatus <- untraceableFiber.join
       _ <- ZIO.when(tracingStatus.isTraced) {
@@ -515,7 +515,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
   }
 
   object mapErrorPreservesTraceFixture {
-    val succ     = ZIO.succeedNow(_: ZTrace)
+    val succ     = ZIO.succeed(_: ZTrace)
     val fail     = () => throw new Exception("error!")
     val mapError = (_: Any) => ()
   }
@@ -534,7 +534,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
 
   object catchSomeWithOptimizedEffectFixture {
     val fail      = () => throw new Exception("error!")
-    val badMethod = ZIO.succeedNow(_: ZTrace)
+    val badMethod = ZIO.succeed(_: ZTrace)
   }
 
   def catchAllWithOptimizedEffect = {
@@ -548,7 +548,7 @@ object StackTracesSpec extends DefaultRunnableSpec {
   }
 
   object catchAllWithOptimizedEffectFixture {
-    val succ               = ZIO.succeedNow(_: ZTrace)
+    val succ               = ZIO.succeed(_: ZTrace)
     val fail               = () => throw new Exception("error!")
     val refailAndLoseTrace = (_: Any) => ZIO.fail("bad!")
   }
@@ -566,8 +566,8 @@ object StackTracesSpec extends DefaultRunnableSpec {
   object foldMWithOptimizedEffectFixture {
     val mkTrace    = (_: Any) => ZIO.trace
     val fail       = () => throw new Exception("error!")
-    val badMethod1 = ZIO.succeedNow(_: ZTrace)
-    val badMethod2 = ZIO.succeedNow(_: ZTrace)
+    val badMethod1 = ZIO.succeed(_: ZTrace)
+    val badMethod2 = ZIO.succeed(_: ZTrace)
   }
 
   object singleTaskForCompFixture {

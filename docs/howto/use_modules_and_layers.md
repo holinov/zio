@@ -15,7 +15,7 @@ To access the DB we need a `DBConnection`, and each step in our program represen
 The result is a program that, in turn, depends on the `DBConnection`.
 
 ```scala mdoc:invisible
-import zio.{ Has, IO, Layer, UIO, ZEnv, ZIO, ZLayer }
+import zio.{ Has, IO, Layer, UIO, URIO, ZEnv, ZIO, ZLayer }
 import zio.clock.Clock
 import zio.console.Console
 import zio.random.Random
@@ -33,10 +33,10 @@ case class User(id: UserId, name: String)
 
 ```scala mdoc:silent
 def getUser(userId: UserId): ZIO[DBConnection, Nothing, Option[User]] = UIO(???)
-def createUser(user: User): ZIO[DBConnection, Nothing, Unit] = UIO(???)
+def createUser(user: User): URIO[DBConnection, Unit] = UIO(???)
 
 val user: User = User(UserId(1234), "Chet")
-val created: ZIO[DBConnection, Nothing, Boolean] = for {
+val created: URIO[DBConnection, Boolean] = for {
   maybeUser <- getUser(user.id)
   res       <- maybeUser.fold(createUser(user).as(true))(_ => ZIO.succeed(false))
 } yield res
@@ -46,7 +46,7 @@ To run the program we must supply a `DBConnection` through `provide`, before fee
 
 ```scala
 val dbConnection: DBConnection = ???
-val runnable: ZIO[Any, Nothing, Boolean] = created.provide(dbConnection)
+val runnable: UIO[Boolean] = created.provide(dbConnection)
 
 val finallyCreated  = runtime.unsafeRun(runnable)
 ```
@@ -56,7 +56,7 @@ Notice that the act of `provide`ing an effect with its environment eliminates th
 In general we need more than just a DB connection though. We need components that enable us to perform different operations, and we need to be able to wire them together. This is what _modules_ are for.
 
 ## Our first ZIO module
-We will see now how to define modules and use them to create different application layers relying on each other. The core idea is that a layer depends on the layers imediately below but it is completely agnostic about their internal implementation.
+We will see now how to define modules and use them to create different application layers relying on each other. The core idea is that a layer depends on the layers immediately below but it is completely agnostic about their internal implementation.
 
 This formulation of module pattern is _the way_ ZIO manages dependencies between application components, giving extreme power in terms of compositionality and offering the capability to easily change different implementations. This is particularly useful during the testing/mocking phase.
 
@@ -64,7 +64,7 @@ This formulation of module pattern is _the way_ ZIO manages dependencies between
 A module is a group of functions that deals with only one concern. Keeping the scope of a module limited improves our ability to understand code, in that we need to focus
  only on one topic at a time without juggling with too many concepts together in our head.
 
-`ZIO` iself provides the basic capabilities through modules, e.g. see how `ZEnv` is defined.
+`ZIO` itself provides the basic capabilities through modules, e.g. see how `ZEnv` is defined.
 
 ### The module recipe
 Let's build a module for user data access, following these simple steps:
@@ -90,7 +90,7 @@ object UserRepo {
 ```
 
 ```scala mdoc:reset:invisible
-import zio.{ Has, IO, Layer, UIO, ZEnv, ZIO, ZLayer }
+import zio.{ Has, IO, Layer, UIO, URIO, ZEnv, ZIO, ZLayer }
 import zio.clock.Clock
 import zio.console.Console
 import zio.random.Random
@@ -107,7 +107,7 @@ We encountered two new data types `Has` and `ZLayer`, let's get familiar with th
 
 ### The `Has` data type
 
-`Has[A]` represents a dependency on a service of type `A`. Two `Has[_]` can be combined _horizontally_ through `+` and `++` operators, as in
+`Has[A]` represents a dependency on a service of type `A`. Two `Has[_]` can be combined _horizontally_ through `++` operator, as in
 
 ```scala mdoc:invisible
 object Repo {
@@ -211,10 +211,10 @@ object Logging {
   )
 
   //accessor methods
-  def info(s: String): ZIO[Logging, Nothing, Unit] =
+  def info(s: String): URIO[Logging, Unit] =
     ZIO.accessM(_.get.info(s))
 
-  def error(s: String): ZIO[Logging, Nothing, Unit] =
+  def error(s: String): URIO[Logging, Unit] =
     ZIO.accessM(_.get.error(s))
 }
 ```
@@ -224,9 +224,9 @@ The accessor methods are provided so that we can build programs without botherin
 ```scala mdoc:silent
 val user2: User = User(UserId(123), "Tommy")
 val makeUser: ZIO[Logging with UserRepo, DBError, Unit] = for {
-  _ <- Logging.info(s"inserting user")  // ZIO[Logging, Nothing, Unit]
+  _ <- Logging.info(s"inserting user")  // URIO[Logging, Unit]
   _ <- UserRepo.createUser(user2)       // ZIO[UserRepo, DBError, Unit]
-  _ <- Logging.info(s"user inserted")   // ZIO[Logging, Nothing, Unit]
+  _ <- Logging.info(s"user inserted")   // URIO[Logging, Unit]
 } yield ()
 ```
 
@@ -312,3 +312,83 @@ val fullRepo: Layer[Nothing, UserRepo] = connectionLayer >>> postgresLayer
 One important feature of `ZIO` layers is that they are acquired in parallel wherever possible, and they are shared. For every layer in our dependency graph, there is only one instance of it that is shared between all the layers that depend on it. If you don't want to share a module, create a fresh, non-shared version of it through `ZLayer.fresh`.
 
 Notice also that the `ZLayer` mechanism makes it impossible to build cyclic dependencies, making the initialization process very linear, by construction.
+
+# Hidden Versus Passed Through Dependencies
+One design decision regarding building dependency graphs is whether to hide or pass through the upstream dependencies of a service. `ZLayer` defaults to hidden dependencies but makes it easy to pass through dependencies as well.
+
+To illustrate this, consider the postgres-based repository discussed above:
+
+```scala mdoc:silent
+val connection: ZLayer[Any, Nothing, Has[Connection]] = connectionLayer
+val userRepo: ZLayer[Has[Connection], Nothing, UserRepo] = postgresLayer
+val layer: ZLayer[Any, Nothing, UserRepo] = connection >>> userRepo
+```
+
+Notice that in `layer` the dependency of `UserRepo` on `Connection` has been "hidden" and is no longer expressed in the type signature. From the perspective of a caller, `layer` just outputs a `UserRepo` and requires no inputs. The caller does not need to be concerned with the internal implementation details of how the `UserRepo` is constructed.
+
+This achieves an encapsulation of services and can make it easier to refactor code. For example, say we want to refactor our application to use an in memory database:
+
+```scala mdoc:silent
+val updatedLayer: ZLayer[Any, Nothing, UserRepo] = dbLayer
+```
+
+No other code will need to be changed, because the fact that the previous implementation used a `Connection` was hidden from users and so they were not able to rely on it.
+
+However, if an upstream dependency is used by many other services it can be convenient to "pass through" that dependency and include it in the output of a layer. This can be done with the `>+>` operator, which provides the output of one layer to another layer, returning a new layer that outputs the services of _both_ layers.
+
+```scala
+val layer: ZLayer[Any, Nothing, Connection with UserRepo] = connection >+> userRepo
+```
+
+Here, the `Connection` dependency has been passed through and is available to all downstream services. This allows a style of composition where the `>+>` operator is used to build a progressively larger set of services, with each new service able to depend on all the services before it.
+
+```scala mdoc:invisible
+type Baker = Has[Baker.Service]
+type Ingredients = Has[Ingredients.Service]
+type Oven = Has[Oven.Service]
+type Dough = Has[Dough.Service]
+type Cake = Has[Cake.Service]
+
+object Baker {
+  trait Service
+}
+
+object Ingredients {
+  trait Service
+}
+
+object Oven {
+  trait Service
+}
+
+object Dough {
+  trait Service
+}
+
+object Cake {
+  trait Service
+}
+```
+
+```scala mdoc
+lazy val baker: ZLayer[Any, Nothing, Baker] = ???
+lazy val ingredients: ZLayer[Any, Nothing, Ingredients] = ???
+lazy val oven: ZLayer[Any, Nothing, Oven] = ???
+lazy val dough: ZLayer[Baker with Ingredients, Nothing, Dough] = ???
+lazy val cake: ZLayer[Baker with Oven with Dough, Nothing, Cake] = ???
+
+lazy val all: ZLayer[Any, Nothing, Baker with Ingredients with Oven with Dough with Cake] =
+  baker >+>       // Baker
+  ingredients >+> // Baker with Ingredients
+  oven >+>        // Baker with Ingredients with Oven
+  dough >+>       // Baker with Ingredients with Oven with Dough
+  cake            // Baker with Ingredients with Oven with Dough with Cake
+```
+
+`ZLayer` makes it easy to mix and match these styles. If you pass through dependencies and later want to hide them you can do so through a simple type ascription:
+
+```scala mdoc:silent
+lazy val hidden: ZLayer[Any, Nothing, Cake] = all
+```
+
+And if you do build your dependency graph more explicitly you can be confident that layers used in multiple parts of the dependency graph will only be created once due to memoization and sharing.

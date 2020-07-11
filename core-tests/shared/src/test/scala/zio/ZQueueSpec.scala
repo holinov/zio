@@ -39,7 +39,7 @@ object ZQueueSpec extends ZIOBaseSpec {
         queue  <- Queue.bounded[Int](10)
         f      <- IO.forkAll(List.fill(10)(queue.take))
         values = Range.inclusive(1, 10).toList
-        _      <- values.map(queue.offer).foldLeft[UIO[Boolean]](IO.succeedNow(false))(_ *> _)
+        _      <- values.map(queue.offer).foldLeft[UIO[Boolean]](IO.succeed(false))(_ *> _)
         v      <- f.join
       } yield assert(v.toSet)(equalTo(values.toSet))
     },
@@ -134,7 +134,7 @@ object ZQueueSpec extends ZIOBaseSpec {
       for {
         queue  <- Queue.bounded[Int](4)
         values = List(1, 2, 3, 4)
-        _      <- values.map(queue.offer).foldLeft(IO.succeedNow(false))(_ *> _)
+        _      <- values.map(queue.offer).foldLeft(IO.succeed(false))(_ *> _)
         _      <- queue.offer(5).fork
         _      <- waitForSize(queue, 5)
         v      <- queue.takeAll
@@ -227,13 +227,52 @@ object ZQueueSpec extends ZIOBaseSpec {
       for {
         queue  <- Queue.bounded[Int](4)
         values = List(1, 2, 3, 4)
-        _      <- values.map(queue.offer).foldLeft(IO.succeedNow(false))(_ *> _)
+        _      <- values.map(queue.offer).foldLeft(IO.succeed(false))(_ *> _)
         f      <- queue.offer(5).fork
         _      <- waitForSize(queue, 5)
         l      <- queue.takeUpTo(5)
         _      <- f.interrupt
       } yield assert(l)(equalTo(List(1, 2, 3, 4)))
     },
+    suite("takeBetween")(
+      testM("returns immediately if there is enough elements") {
+        for {
+          queue <- Queue.bounded[Int](100)
+          _     <- queue.offer(10)
+          _     <- queue.offer(20)
+          _     <- queue.offer(30)
+          res   <- queue.takeBetween(2, 5)
+        } yield assert(res)(equalTo(List(10, 20, 30)))
+      },
+      testM("returns an empty list if boundaries are inverted") {
+        for {
+          queue <- Queue.bounded[Int](100)
+          _     <- queue.offer(10)
+          _     <- queue.offer(20)
+          _     <- queue.offer(30)
+          res   <- queue.takeBetween(5, 2)
+        } yield assert(res)(isEmpty)
+      },
+      testM("returns an empty list if boundaries are negative") {
+        for {
+          queue <- Queue.bounded[Int](100)
+          _     <- queue.offer(10)
+          _     <- queue.offer(20)
+          _     <- queue.offer(30)
+          res   <- queue.takeBetween(-5, -2)
+        } yield assert(res)(isEmpty)
+      },
+      testM("blocks until a required minimum of elements is collected") {
+        for {
+          queue   <- Queue.bounded[Int](100)
+          counter <- Ref.make(0)
+          updater = (queue.offer(10) *> counter.update(_ + 1)).forever
+          getter  = queue.takeBetween(5, 10)
+          _       <- getter.race(updater)
+          count   <- counter.get
+        } yield assert(count > 5)(isTrue)
+      }
+    ),
     testM("offerAll with takeAll") {
       for {
         queue  <- Queue.bounded[Int](10)
@@ -555,7 +594,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("dropping strategy with offerAll") {
       for {
-        capacity <- IO.succeedNow(4)
+        capacity <- IO.succeed(4)
         queue    <- Queue.dropping[Int](capacity)
         iter     = Range.inclusive(1, 5)
         _        <- queue.offerAll(iter)
@@ -564,7 +603,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("dropping strategy with offerAll, check offer returns false") {
       for {
-        capacity <- IO.succeedNow(2)
+        capacity <- IO.succeed(2)
         queue    <- Queue.dropping[Int](capacity)
         v1       <- queue.offerAll(Iterable(1, 2, 3, 4, 5, 6))
         _        <- queue.takeAll
@@ -572,7 +611,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("dropping strategy with offerAll, check ordering") {
       for {
-        capacity <- IO.succeedNow(128)
+        capacity <- IO.succeed(128)
         queue    <- Queue.dropping[Int](capacity)
         iter     = Range.inclusive(1, 256)
         _        <- queue.offerAll(iter)
@@ -581,7 +620,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("dropping strategy with pending taker") {
       for {
-        capacity <- IO.succeedNow(2)
+        capacity <- IO.succeed(2)
         queue    <- Queue.dropping[Int](capacity)
         iter     = Range.inclusive(1, 4)
         f        <- queue.take.fork
@@ -593,7 +632,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("sliding strategy with pending taker") {
       for {
-        capacity <- IO.succeedNow(2)
+        capacity <- IO.succeed(2)
         queue    <- Queue.sliding[Int](capacity)
         iter     = Range.inclusive(1, 4)
         _        <- queue.take.fork
@@ -605,7 +644,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("sliding strategy, check offerAll returns true") {
       for {
-        capacity <- IO.succeedNow(5)
+        capacity <- IO.succeed(5)
         queue    <- Queue.sliding[Int](capacity)
         iter     = Range.inclusive(1, 3)
         oa       <- queue.offerAll(iter.toList)
@@ -613,7 +652,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("bounded strategy, check offerAll returns true") {
       for {
-        capacity <- IO.succeedNow(5)
+        capacity <- IO.succeed(5)
         queue    <- Queue.bounded[Int](capacity)
         iter     = Range.inclusive(1, 3)
         oa       <- queue.offerAll(iter.toList)
@@ -664,7 +703,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     },
     testM("queue mapM") {
       for {
-        q <- Queue.bounded[Int](100).map(_.mapM(IO.succeedNow))
+        q <- Queue.bounded[Int](100).map(_.mapM(IO.succeed(_)))
         _ <- q.offer(10)
         v <- q.take
       } yield assert(v)(equalTo(10))
@@ -672,7 +711,7 @@ object ZQueueSpec extends ZIOBaseSpec {
     testM("queue mapM with success") {
       for {
         q <- Queue.bounded[IO[String, Int]](100).map(_.mapM(identity))
-        _ <- q.offer(IO.succeedNow(10))
+        _ <- q.offer(IO.succeed(10))
         v <- q.take.sandbox.either
       } yield assert(v)(isRight(equalTo(10)))
     },
@@ -756,6 +795,6 @@ object ZQueueSpecUtil {
   def waitForValue[T](ref: UIO[T], value: T): URIO[Live, T] =
     Live.live((ref <* clock.sleep(10.millis)).repeat(Schedule.doWhile(_ != value)))
 
-  def waitForSize[A](queue: Queue[A], size: Int): URIO[Live, Int] =
+  def waitForSize[RA, EA, RB, EB, A, B](queue: ZQueue[RA, EA, RB, EB, A, B], size: Int): URIO[Live, Int] =
     waitForValue(queue.size, size)
 }

@@ -128,12 +128,6 @@ object TestAspectSpec extends ZIOBaseSpec {
     test("flaky retries a test with a limit") {
       assert(true)(isFalse)
     } @@ flaky @@ failing,
-    testM("forked runs each test on its own separate fiber") {
-      for {
-        _        <- ZIO.infinity.fork
-        children <- ZIO.children
-      } yield assert(children)(hasSize(equalTo(1)))
-    } @@ forked @@ nonFlaky,
     test("ifEnv runs a test if environment variable satisfies assertion") {
       assert(true)(isTrue)
     } @@ ifEnv("PATH", containsString("bin")) @@ success @@ jvmOnly,
@@ -203,9 +197,6 @@ object TestAspectSpec extends ZIOBaseSpec {
       val result = if (TestPlatform.isNative) succeeded(spec) else isIgnored(spec)
       assertM(result)(isTrue)
     },
-    testM("noDelay causes sleep effects to be executed immediately") {
-      assertM(ZIO.sleep(Duration.Infinity))(anything)
-    } @@ noDelay,
     suite("nonTermination")(
       testM("makes a test pass if it does not terminate within the specified time") {
         assertM(ZIO.never)(anything)
@@ -250,7 +241,7 @@ object TestAspectSpec extends ZIOBaseSpec {
       for {
         ref <- Ref.make(false)
         spec = suite("verify")(
-          testM("first test")(ZIO.succeedNow(assertCompletes)),
+          testM("first test")(ZIO.succeed(assertCompletes)),
           testM("second test")(ref.set(true).as(assertCompletes))
         ) @@ sequential @@ verify(assertM(ref.get)(isTrue))
         result <- succeeded(spec)

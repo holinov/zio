@@ -19,61 +19,70 @@ package zio.test.mock.internal
 import scala.util.Try
 
 import zio.test.Assertion
-import zio.test.mock.{ Expectation, Method, Proxy }
-import zio.{ Has, IO, Promise, Tagged, UIO, ULayer, ZIO, ZLayer }
+import zio.test.mock.{ Capability, Expectation, Proxy }
+import zio.{ Has, IO, Tag, UIO, ULayer, ZIO, ZLayer }
 
 object ProxyFactory {
 
+  import Debug._
   import Expectation._
+  import ExpectationState._
   import InvalidCall._
   import MockException._
 
   /**
-   * Given initial `State[R]`, constructs a `Proxy` running that state.
+   * Given initial `MockState[R]`, constructs a `Proxy` running that state.
    */
-  def mockProxy[R <: Has[_]: Tagged](state: State[R]): ULayer[Has[Proxy]] =
+  def mockProxy[R <: Has[_]: Tag](state: MockState[R]): ULayer[Has[Proxy]] =
     ZLayer.succeed(new Proxy {
-      def invoke[RIn <: Has[_], ROut, I, E, A](invokedMethod: Method[RIn, I, E, A], args: I): ZIO[ROut, E, A] = {
-
-        def findMatching(scopes: List[Scope[R]]): UIO[Matched[R, E, A]] =
+      def invoke[RIn <: Has[_], ROut, I, E, A](invoked: Capability[RIn, I, E, A], args: I): ZIO[ROut, E, A] = {
+        def findMatching(scopes: List[Scope[R]]): UIO[Matched[R, E, A]] = {
+          debug(s"::: invoked $invoked\n${prettify(scopes)}")
           scopes match {
-            case Nil => ZIO.die(UnexpectedCallExpection(invokedMethod, args))
-            case Scope(expectation, id, update) :: nextScopes =>
+            case Nil => ZIO.die(UnexpectedCallExpection(invoked, args))
+            case Scope(expectation, id, update0) :: nextScopes =>
+              val update: Expectation[R] => Expectation[R] = updated => {
+                debug(s"::: updated state to: ${updated.state}")
+                update0(updated)
+              }
+
               expectation match {
-                case anyExpectation if anyExpectation.saturated =>
+                case anyExpectation if anyExpectation.state == Saturated =>
+                  debug("::: skipping saturated expectation")
                   findMatching(nextScopes)
 
-                case call @ Call(method, assertion, returns, _, _, invocations) if invokedMethod isEqual method =>
-                  assertion.asInstanceOf[Assertion[I]].test(args).flatMap {
+                case call @ Call(capability, assertion, returns, _, invocations) if invoked isEqual capability =>
+                  debug(s"::: matched call $capability")
+                  assertion.asInstanceOf[Assertion[I]].test(args) match {
                     case true =>
                       val result = returns.asInstanceOf[I => IO[E, A]](args)
                       val updated = call
                         .asInstanceOf[Call[R, I, E, A]]
                         .copy(
-                          satisfied = true,
-                          saturated = true,
+                          state = Saturated,
                           invocations = id :: invocations
                         )
 
-                      UIO.succeed(Matched[R, E, A](update(updated), result))
+                      UIO.succeedNow(Matched[R, E, A](update(updated), result))
 
                     case false =>
                       handleLeafFailure(
-                        InvalidArguments(invokedMethod, args, assertion.asInstanceOf[Assertion[Any]]),
+                        InvalidArguments(invoked, args, assertion.asInstanceOf[Assertion[Any]]),
                         nextScopes
                       )
                   }
 
-                case Call(method, assertion, _, _, _, _) =>
+                case Call(capability, assertion, _, _, _) =>
+                  debug(s"::: invalid call $capability")
                   val invalidCall =
-                    if (invokedMethod.id == method.id) InvalidPolyType(invokedMethod, args, method, assertion)
-                    else InvalidMethod(invokedMethod, method, assertion)
+                    if (invoked.id == capability.id) InvalidPolyType(invoked, args, capability, assertion)
+                    else InvalidCapability(invoked, capability, assertion)
 
                   handleLeafFailure(invalidCall, nextScopes)
 
-                case self @ Chain(children, _, _, invocations) =>
-                  children.zipWithIndex.collectFirst {
-                    case (child, index) if !child.saturated =>
+                case self @ Chain(children, _, invocations, _) =>
+                  val scope = children.zipWithIndex.collectFirst {
+                    case (child, index) if child.state < Saturated =>
                       Scope[R](
                         child,
                         id,
@@ -83,107 +92,121 @@ object ProxyFactory {
                           update(
                             self.copy(
                               children = updatedChildren,
-                              satisfied = updatedChildren.forall(_.satisfied),
-                              saturated = updatedChildren.forall(_.saturated),
+                              state = minimumState(updatedChildren),
                               invocations = id :: invocations
                             )
                           )
                         }
                       )
-                  } match {
+                  }
+
+                  findMatching(scope.get :: nextScopes)
+
+                case self @ And(children, _, invocations, _) =>
+                  val scopes = children.zipWithIndex.collect {
+                    case (child, index) if child.state < Saturated =>
+                      Scope[R](
+                        child,
+                        id,
+                        updatedChild => {
+                          val updatedChildren = children.updated(index, updatedChild)
+
+                          update(
+                            self.copy(
+                              children = updatedChildren,
+                              state = minimumState(updatedChildren),
+                              invocations = id :: invocations
+                            )
+                          )
+                        }
+                      )
+                  }
+
+                  findMatching(scopes ++ nextScopes)
+
+                case self @ Or(children, _, invocations, _) =>
+                  children.zipWithIndex.find(_._1.state == PartiallySatisfied) match {
+                    case Some((child, index)) =>
+                      val scope = Scope[R](
+                        child,
+                        id,
+                        updatedChild => {
+                          val updatedChildren = children.updated(index, updatedChild)
+
+                          update(
+                            self.copy(
+                              children = updatedChildren,
+                              state = maximumState(updatedChildren),
+                              invocations = id :: invocations
+                            )
+                          )
+                        }
+                      )
+
+                      findMatching(scope :: nextScopes)
                     case None =>
-                      ZIO.dieMessage(
-                        "Illegal state. Unsaturated `Chain` node implies at least one unsaturated child expectation."
-                      )
-                    case Some(scope) => findMatching(scope :: nextScopes)
-                  }
+                      val scopes = children.zipWithIndex.collect {
+                        case (child, index) =>
+                          Scope[R](
+                            child,
+                            id,
+                            updatedChild => {
+                              val updatedChildren = children.updated(index, updatedChild)
 
-                case self @ And(children, _, _, invocations) =>
-                  children.zipWithIndex.collect {
-                    case (child, index) if !child.saturated =>
-                      Scope[R](
-                        child,
-                        id,
-                        updatedChild => {
-                          val updatedChildren = children.updated(index, updatedChild)
-
-                          update(
-                            self.copy(
-                              children = updatedChildren,
-                              satisfied = updatedChildren.forall(_.satisfied),
-                              saturated = updatedChildren.forall(_.saturated),
-                              invocations = id :: invocations
-                            )
+                              update(
+                                self.copy(
+                                  children = updatedChildren,
+                                  state = maximumState(updatedChildren),
+                                  invocations = id :: invocations
+                                )
+                              )
+                            }
                           )
-                        }
-                      )
-                  } match {
-                    case Nil =>
-                      ZIO.dieMessage(
-                        "Illegal state. Unsaturated `And` node implies at least one unsaturated child expectation."
-                      )
-                    case scopes => findMatching(scopes ++ nextScopes)
+                      }
+
+                      findMatching(scopes ++ nextScopes)
                   }
 
-                case self @ Or(children, _, _, invocations) =>
-                  children.zipWithIndex.collect {
-                    case (child, index) =>
-                      Scope[R](
-                        child,
-                        id,
-                        updatedChild => {
-                          val updatedChildren = children.updated(index, updatedChild)
-
-                          update(
-                            self.copy(
-                              children = updatedChildren,
-                              satisfied = updatedChildren.exists(_.satisfied),
-                              saturated = updatedChildren.exists(_.saturated),
-                              invocations = id :: invocations
-                            )
-                          )
-                        }
-                      )
-                  } match {
-                    case Nil =>
-                      ZIO.dieMessage(
-                        "Illegal state. Unsaturated `Or` node implies at least one unsaturated child expectation."
-                      )
-                    case scopes => findMatching(scopes ++ nextScopes)
-                  }
-
-                case self @ Repeated(expectation, range, _, _, invocations, started, completed) =>
-                  val initialize = expectation.saturated && completed < range.max
+                case self @ Repeated(expectation, range, state, invocations, started, completed) =>
+                  val initialize = (state == Saturated) && completed < range.max
                   val child      = if (initialize) resetTree(expectation) else expectation
                   val scope = Scope[R](
                     child,
                     id,
                     updatedChild => {
-
                       val updatedStarted =
                         if (started == completed) started + 1
                         else started
 
                       val updatedCompleted =
-                        if (updatedChild.saturated) completed + 1
+                        if (updatedChild.state == Saturated) completed + 1
                         else completed
 
-                      val subtree =
-                        if (updatedChild.saturated) resetTree(updatedChild)
-                        else updatedChild
-
-                      def inRange(value: Int): Boolean =
-                        if (range.end != -1) range contains value
+                      val inRepeatsRange: Boolean =
+                        if (range.end != -1) range contains updatedStarted
                         else {
                           val fakeUnboundedRange = range.start to Int.MaxValue by range.step
-                          fakeUnboundedRange contains value
+                          fakeUnboundedRange contains updatedStarted
                         }
+
+                      val maxRepeatsReached: Boolean =
+                        Try(range.max == updatedCompleted).getOrElse(false)
 
                       update(
                         self.copy(
-                          child = subtree,
-                          satisfied = inRange(updatedStarted) && updatedChild.satisfied,
-                          saturated = Try(range.max == updatedCompleted).getOrElse(false),
+                          child = if (updatedChild.state == Saturated) resetTree(updatedChild) else updatedChild,
+                          state = updatedChild.state match {
+                            case Saturated =>
+                              if (!inRepeatsRange) PartiallySatisfied
+                              else if (maxRepeatsReached) Saturated
+                              else Satisfied
+
+                            case Satisfied =>
+                              if (!inRepeatsRange) PartiallySatisfied
+                              else Satisfied
+
+                            case childState => childState
+                          },
                           invocations = id :: invocations,
                           started = updatedStarted,
                           completed = updatedCompleted
@@ -195,6 +218,20 @@ object ProxyFactory {
                   findMatching(scope :: nextScopes)
               }
           }
+        }
+
+        def minimumState(children: List[Expectation[R]]): ExpectationState = {
+          val states = children.map(_.state)
+          val min    = states.min
+          val max    = states.max
+
+          if (min >= Satisfied) min
+          else if (max >= Satisfied) PartiallySatisfied
+          else Unsatisfied
+        }
+
+        def maximumState(children: List[Expectation[R]]): ExpectationState =
+          children.map(_.state).max
 
         def handleLeafFailure(failure: => InvalidCall, nextScopes: List[Scope[R]]): UIO[Matched[R, E, A]] =
           state.failedMatchesRef
@@ -207,49 +244,39 @@ object ProxyFactory {
         def resetTree(expectation: Expectation[R]): Expectation[R] =
           expectation match {
             case self: Call[R, _, _, _] =>
-              self.copy(
-                satisfied = false,
-                saturated = false
-              )
+              self.copy(state = Unsatisfied)
             case self: Chain[R] =>
               self.copy(
                 children = self.children.map(resetTree),
-                satisfied = false,
-                saturated = false
+                state = Unsatisfied
               )
             case self: And[R] =>
               self.copy(
                 children = self.children.map(resetTree),
-                satisfied = false,
-                saturated = false
+                state = Unsatisfied
               )
             case self: Or[R] =>
               self.copy(
                 children = self.children.map(resetTree),
-                satisfied = false,
-                saturated = false
+                state = Unsatisfied
               )
             case self: Repeated[R] =>
               self.copy(
                 child = resetTree(self.child),
-                satisfied = false,
-                saturated = false,
+                state = Unsatisfied,
                 completed = 0
               )
           }
 
         for {
-          promise <- Promise.make[E, A]
           id      <- state.callsCountRef.updateAndGet(_ + 1)
           _       <- state.failedMatchesRef.set(List.empty)
-          _ <- state.expectationRef.update { root =>
-                val rootScope = Scope[R](root, id, identity)
-                findMatching(rootScope :: Nil).flatMap {
-                  case Matched(expectation, result) =>
-                    promise.complete(result) as (expectation)
-                }
-              }
-          output <- promise.await
+          root    <- state.expectationRef.get
+          scope   = Scope[R](root, id, identity)
+          matched <- findMatching(scope :: Nil)
+          _       = debug(s"::: setting root to\n${prettify(matched.expectation)}")
+          _       <- state.expectationRef.set(matched.expectation)
+          output  <- matched.result
         } yield output
       }
     })

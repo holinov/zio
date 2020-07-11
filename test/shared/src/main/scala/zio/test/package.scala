@@ -16,6 +16,9 @@
 
 package zio
 
+import scala.collection.immutable.SortedSet
+import scala.util.Try
+
 import zio.console.Console
 import zio.duration.Duration
 import zio.stream.{ ZSink, ZStream }
@@ -49,7 +52,8 @@ package object test extends CompileVariants {
   type Sized       = Has[Sized.Service]
   type TestLogger  = Has[TestLogger.Service]
 
-  type AssertResult = BoolAlgebraM[Any, Nothing, AssertionValue]
+  type AssertResultM = BoolAlgebraM[Any, Nothing, AssertionValue]
+  type AssertResult  = BoolAlgebra[AssertionValue]
 
   /**
    * A `TestAspectAtLeast[R]` is a `TestAspect` that requires at least an `R` in its environment.
@@ -62,7 +66,7 @@ package object test extends CompileVariants {
    */
   type TestAspectPoly = TestAspect[Nothing, Any, Nothing, Any]
 
-  type TestResult = BoolAlgebraM[Any, Nothing, FailureDetails]
+  type TestResult = BoolAlgebra[FailureDetails]
 
   /**
    * A `TestReporter[E]` is capable of reporting test results with error type
@@ -101,10 +105,10 @@ package object test extends CompileVariants {
         .foldCauseM(
           cause => ZIO.fail(TestFailure.Runtime(cause)),
           result =>
-            result.run.flatMap(_.failures match {
+            result.failures match {
               case None           => ZIO.succeedNow(TestSuccess.Succeeded(BoolAlgebra.unit))
-              case Some(failures) => ZIO.fail(TestFailure.Assertion(BoolAlgebraM(ZIO.succeedNow(failures))))
-            })
+              case Some(failures) => ZIO.fail(TestFailure.Assertion(failures))
+            }
         )
   }
 
@@ -130,26 +134,29 @@ package object test extends CompileVariants {
    */
   type Annotated[+A] = (A, TestAnnotationMap)
 
+  private def traverseResult[A](value: => A, assertResult: AssertResult, assertion: AssertionM[A]): TestResult =
+    assertResult.flatMap { fragment =>
+      def loop(whole: AssertionValue, failureDetails: FailureDetails): TestResult =
+        if (whole.sameAssertion(failureDetails.assertion.head))
+          BoolAlgebra.success(failureDetails)
+        else {
+          val fragment = whole.result
+          val result   = if (fragment.isSuccess) fragment else !fragment
+          result.flatMap { fragment =>
+            loop(fragment, FailureDetails(::(whole, failureDetails.assertion), failureDetails.gen))
+          }
+        }
+
+      loop(fragment, FailureDetails(::(AssertionValue(assertion, value, assertResult), Nil)))
+    }
+
   /**
    * Checks the assertion holds for the given value.
    */
-  def assert[A](value: => A)(assertion: Assertion[A]): TestResult =
-    assertion.run(value).flatMap { fragment =>
-      def loop(whole: AssertionValue, failureDetails: FailureDetails): TestResult =
-        if (whole.assertion == failureDetails.assertion.head.assertion)
-          BoolAlgebraM.success(failureDetails)
-        else {
-          val satisfied = BoolAlgebraM(whole.assertion.test(whole.value).map(BoolAlgebra.success))
-          val fragment  = whole.assertion.run(whole.value)
-          satisfied.flatMap { p =>
-            val result = if (p) fragment else !fragment
-            result.flatMap { fragment =>
-              loop(fragment, FailureDetails(::(whole, failureDetails.assertion), failureDetails.gen))
-            }
-          }
-        }
-      loop(fragment, FailureDetails(::(AssertionValue(assertion, value), Nil)))
-    }
+  def assert[A](value: => A)(assertion: Assertion[A]): TestResult = {
+    lazy val tryValue = Try(value)
+    traverseResult(tryValue.get, assertion.run(tryValue.get), assertion)
+  }
 
   /**
    * Asserts that the given test was completed.
@@ -160,20 +167,23 @@ package object test extends CompileVariants {
   /**
    * Checks the assertion holds for the given effectfully-computed value.
    */
-  def assertM[R, E, A](value: ZIO[R, E, A])(assertion: Assertion[A]): ZIO[R, E, TestResult] =
-    value.map(assert(_)(assertion))
+  def assertM[R, E, A](effect: ZIO[R, E, A])(assertion: AssertionM[A]): ZIO[R, E, TestResult] =
+    for {
+      value        <- effect
+      assertResult <- assertion.runM(value).run
+    } yield traverseResult(value, assertResult, assertion)
 
   /**
    * Checks the test passes for "sufficient" numbers of samples from the
    * given random variable.
    */
-  def check[R, A](rv: Gen[R, A])(test: A => TestResult): ZIO[R, Nothing, TestResult] =
+  def check[R, A](rv: Gen[R, A])(test: A => TestResult): URIO[R, TestResult] =
     checkN(200)(rv)(test)
 
   /**
    * A version of `check` that accepts two random variables.
    */
-  def check[R, A, B](rv1: Gen[R, A], rv2: Gen[R, B])(test: (A, B) => TestResult): ZIO[R, Nothing, TestResult] =
+  def check[R, A, B](rv1: Gen[R, A], rv2: Gen[R, B])(test: (A, B) => TestResult): URIO[R, TestResult] =
     check(rv1 <*> rv2)(test.tupled)
 
   /**
@@ -181,7 +191,7 @@ package object test extends CompileVariants {
    */
   def check[R, A, B, C](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C])(
     test: (A, B, C) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     check(rv1 <*> rv2 <*> rv3)(reassociate(test))
 
   /**
@@ -189,7 +199,7 @@ package object test extends CompileVariants {
    */
   def check[R, A, B, C, D](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], rv4: Gen[R, D])(
     test: (A, B, C, D) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     check(rv1 <*> rv2 <*> rv3 <*> rv4)(reassociate(test))
 
   /**
@@ -197,7 +207,7 @@ package object test extends CompileVariants {
    */
   def check[R, A, B, C, D, F](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], rv4: Gen[R, D], rv5: Gen[R, F])(
     test: (A, B, C, D, F) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     check(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5)(reassociate(test))
 
   /**
@@ -212,7 +222,7 @@ package object test extends CompileVariants {
     rv6: Gen[R, G]
   )(
     test: (A, B, C, D, F, G) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     check(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5 <*> rv6)(reassociate(test))
 
   /**
@@ -280,13 +290,13 @@ package object test extends CompileVariants {
    * is useful for deterministic `Gen` that comprehensively explore all
    * possibilities in a given domain.
    */
-  def checkAll[R, A](rv: Gen[R, A])(test: A => TestResult): ZIO[R, Nothing, TestResult] =
+  def checkAll[R, A](rv: Gen[R, A])(test: A => TestResult): URIO[R, TestResult] =
     checkAllM(rv)(test andThen ZIO.succeedNow)
 
   /**
    * A version of `checkAll` that accepts two random variables.
    */
-  def checkAll[R, A, B](rv1: Gen[R, A], rv2: Gen[R, B])(test: (A, B) => TestResult): ZIO[R, Nothing, TestResult] =
+  def checkAll[R, A, B](rv1: Gen[R, A], rv2: Gen[R, B])(test: (A, B) => TestResult): URIO[R, TestResult] =
     checkAll(rv1 <*> rv2)(test.tupled)
 
   /**
@@ -294,7 +304,7 @@ package object test extends CompileVariants {
    */
   def checkAll[R, A, B, C](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C])(
     test: (A, B, C) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     checkAll(rv1 <*> rv2 <*> rv3)(reassociate(test))
 
   /**
@@ -302,7 +312,7 @@ package object test extends CompileVariants {
    */
   def checkAll[R, A, B, C, D](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], rv4: Gen[R, D])(
     test: (A, B, C, D) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     checkAll(rv1 <*> rv2 <*> rv3 <*> rv4)(reassociate(test))
 
   /**
@@ -310,7 +320,7 @@ package object test extends CompileVariants {
    */
   def checkAll[R, A, B, C, D, F](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], rv4: Gen[R, D], rv5: Gen[R, F])(
     test: (A, B, C, D, F) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     checkAll(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5)(reassociate(test))
 
   /**
@@ -325,7 +335,7 @@ package object test extends CompileVariants {
     rv6: Gen[R, G]
   )(
     test: (A, B, C, D, F, G) => TestResult
-  ): ZIO[R, Nothing, TestResult] =
+  ): URIO[R, TestResult] =
     checkAll(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5 <*> rv6)(reassociate(test))
 
   /**
@@ -418,7 +428,7 @@ package object test extends CompileVariants {
   /**
    * Creates an ignored test result.
    */
-  val ignored: ZIO[Any, Nothing, TestSuccess] =
+  val ignored: UIO[TestSuccess] =
     ZIO.succeedNow(TestSuccess.Ignored)
 
   /**
@@ -435,7 +445,7 @@ package object test extends CompileVariants {
    * Builds a suite containing a number of other specs.
    */
   def suite[R, E, T](label: String)(specs: Spec[R, E, T]*): Spec[R, E, T] =
-    Spec.suite(label, ZIO.succeedNow(specs.toVector), None)
+    Spec.suite(label, ZManaged.succeedNow(specs.toVector), None)
 
   /**
    * Builds a spec with a single pure test.
@@ -473,26 +483,33 @@ package object test extends CompileVariants {
       def annotate[V](key: TestAnnotation[V], value: V): UIO[Unit]
       def get[V](key: TestAnnotation[V]): UIO[V]
       def withAnnotation[R, E, A](zio: ZIO[R, E, A]): ZIO[R, Annotated[E], Annotated[A]]
+      def supervisedFibers: UIO[SortedSet[Fiber.Runtime[Any, Any]]]
     }
 
     /**
      * Accesses an `Annotations` instance in the environment and appends the
      * specified annotation to the annotation map.
      */
-    def annotate[V](key: TestAnnotation[V], value: V): ZIO[Annotations, Nothing, Unit] =
+    def annotate[V](key: TestAnnotation[V], value: V): URIO[Annotations, Unit] =
       ZIO.accessM(_.get.annotate(key, value))
 
     /**
      * Accesses an `Annotations` instance in the environment and retrieves the
      * annotation of the specified type, or its default value if there is none.
      */
-    def get[V](key: TestAnnotation[V]): ZIO[Annotations, Nothing, V] =
+    def get[V](key: TestAnnotation[V]): URIO[Annotations, V] =
       ZIO.accessM(_.get.get(key))
+
+    /**
+     * Returns a set of all fibers in this test.
+     */
+    def supervisedFibers: ZIO[Annotations, Nothing, SortedSet[Fiber.Runtime[Any, Any]]] =
+      ZIO.accessM(_.get.supervisedFibers)
 
     /**
      * Constructs a new `Annotations` service.
      */
-    def live: Layer[Nothing, Annotations] =
+    val live: Layer[Nothing, Annotations] =
       ZLayer.fromEffect(FiberRef.make(TestAnnotationMap.empty).map { fiberRef =>
         new Annotations.Service {
           def annotate[V](key: TestAnnotation[V], value: V): UIO[Unit] =
@@ -502,6 +519,17 @@ package object test extends CompileVariants {
           def withAnnotation[R, E, A](zio: ZIO[R, E, A]): ZIO[R, Annotated[E], Annotated[A]] =
             fiberRef.locally(TestAnnotationMap.empty) {
               zio.foldM(e => fiberRef.get.map((e, _)).flip, a => fiberRef.get.map((a, _)))
+            }
+          def supervisedFibers: UIO[SortedSet[Fiber.Runtime[Any, Any]]] =
+            ZIO.descriptorWith { descriptor =>
+              get(TestAnnotation.fibers).flatMap {
+                case Left(_) => ZIO.succeedNow(SortedSet.empty[Fiber.Runtime[Any, Any]])
+                case Right(refs) =>
+                  ZIO
+                    .foreach(refs)(_.get)
+                    .map(_.foldLeft(SortedSet.empty[Fiber.Runtime[Any, Any]])(_ ++ _))
+                    .map(_.filter(_.id != descriptor.id))
+              }
             }
         }
       })
@@ -531,7 +559,7 @@ package object test extends CompileVariants {
         }
       })
 
-    def size: ZIO[Sized, Nothing, Int] =
+    def size: URIO[Sized, Int] =
       ZIO.accessM[Sized](_.get.size)
 
     def withSize[R <: Sized, E, A](size: Int)(zio: ZIO[R, E, A]): ZIO[R, E, A] =
@@ -557,21 +585,21 @@ package object test extends CompileVariants {
   object CheckVariants {
 
     final class CheckN(private val n: Int) extends AnyVal {
-      def apply[R, A](rv: Gen[R, A])(test: A => TestResult): ZIO[R, Nothing, TestResult] =
+      def apply[R, A](rv: Gen[R, A])(test: A => TestResult): URIO[R, TestResult] =
         checkNM(n)(rv)(test andThen ZIO.succeedNow)
-      def apply[R, A, B](rv1: Gen[R, A], rv2: Gen[R, B])(test: (A, B) => TestResult): ZIO[R, Nothing, TestResult] =
+      def apply[R, A, B](rv1: Gen[R, A], rv2: Gen[R, B])(test: (A, B) => TestResult): URIO[R, TestResult] =
         checkN(n)(rv1 <*> rv2)(test.tupled)
       def apply[R, A, B, C](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C])(
         test: (A, B, C) => TestResult
-      ): ZIO[R, Nothing, TestResult] =
+      ): URIO[R, TestResult] =
         checkN(n)(rv1 <*> rv2 <*> rv3)(reassociate(test))
       def apply[R, A, B, C, D](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], rv4: Gen[R, D])(
         test: (A, B, C, D) => TestResult
-      ): ZIO[R, Nothing, TestResult] =
+      ): URIO[R, TestResult] =
         checkN(n)(rv1 <*> rv2 <*> rv3 <*> rv4)(reassociate(test))
       def apply[R, A, B, C, D, F](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], rv4: Gen[R, D], rv5: Gen[R, F])(
         test: (A, B, C, D, F) => TestResult
-      ): ZIO[R, Nothing, TestResult] =
+      ): URIO[R, TestResult] =
         checkN(n)(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5)(reassociate(test))
       def apply[R, A, B, C, D, F, G](
         rv1: Gen[R, A],
@@ -582,7 +610,7 @@ package object test extends CompileVariants {
         rv6: Gen[R, G]
       )(
         test: (A, B, C, D, F, G) => TestResult
-      ): ZIO[R, Nothing, TestResult] =
+      ): URIO[R, TestResult] =
         checkN(n)(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5 <*> rv6)(reassociate(test))
     }
 
@@ -635,11 +663,10 @@ package object test extends CompileVariants {
             .map(_.map(_.copy(gen = Some(GenFailureDetails(initial.value, input, index)))))
             .either
         )
-    }.mapM(_.foreach(_.fold(e => ZIO.succeedNow(Left(e)), a => a.run.map(Right(_)))))
-      .dropWhile(!_.value.fold(_ => true, _.isFailure)) // Drop until we get to a failure
+    }.dropWhile(!_.value.fold(_ => true, _.isFailure)) // Drop until we get to a failure
       .take(1)                                          // Get the first failure
       .flatMap(_.shrinkSearch(_.fold(_ => true, _.isFailure)).take(maxShrinks.toLong))
-      .run(ZSink.collectAll[Either[E, BoolAlgebra[FailureDetails]]]) // Collect all the shrunken values
+      .run(ZSink.collectAll[Either[E, TestResult]]) // Collect all the shrunken values
       .flatMap { shrinks =>
         // Get the "last" failure, the smallest according to the shrinker:
         shrinks
@@ -647,13 +674,13 @@ package object test extends CompileVariants {
           .lastOption
           .fold[ZIO[R, E, TestResult]](
             ZIO.succeedNow {
-              BoolAlgebraM.success {
+              BoolAlgebra.success {
                 FailureDetails(
-                  ::(AssertionValue(Assertion.anything, ()), Nil)
+                  ::(AssertionValue(Assertion.anything, (), Assertion.anything.run(())), Nil)
                 )
               }
             }
-          )(_.fold(e => ZIO.fail(e), a => ZIO.succeedNow(BoolAlgebraM(ZIO.succeedNow(a)))))
+          )(ZIO.fromEither(_))
       }
       .untraced
 

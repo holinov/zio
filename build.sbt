@@ -122,6 +122,9 @@ lazy val coreNative = core.native
   .settings(scalaVersion := "2.11.12")
   .settings(skip in Test := true)
   .settings(skip in doc := true)
+  .settings( // Exclude from Intellij because Scala Native projects break it - https://github.com/scala-native/scala-native/issues/1007#issuecomment-370402092
+    SettingKey[Boolean]("ide-skip-project") := true
+  )
   .settings(sources in (Compile, doc) := Seq.empty)
   .settings(
     libraryDependencies ++= Seq(
@@ -203,6 +206,11 @@ lazy val test = crossProject(JSPlatform, JVMPlatform)
   .settings(crossProjectSettings)
   .settings(macroDefinitionSettings)
   .settings(macroExpansionSettings)
+  .settings(
+    libraryDependencies ++= Seq(
+      ("org.portable-scala" %%% "portable-scala-reflect" % "1.0.0").withDottyCompat(scalaVersion.value)
+    )
+  )
 
 lazy val testJVM = test.jvm.settings(dottySettings)
 lazy val testJS  = test.js
@@ -216,6 +224,7 @@ lazy val testTests = crossProject(JSPlatform, JVMPlatform)
   .dependsOn(testRunner)
   .settings(buildInfoSettings("zio.test"))
   .settings(skip in publish := true)
+  .settings(macroExpansionSettings)
   .enablePlugins(BuildInfoPlugin)
 
 lazy val testTestsJVM = testTests.jvm.settings(dottySettings)
@@ -225,10 +234,11 @@ lazy val testMagnolia = crossProject(JVMPlatform, JSPlatform)
   .in(file("test-magnolia"))
   .dependsOn(test)
   .settings(stdSettings("zio-test-magnolia"))
+  .settings(macroDefinitionSettings)
   .settings(
     crossScalaVersions --= Seq("2.11.12", dottyVersion),
     scalacOptions += "-language:experimental.macros",
-    libraryDependencies += "com.propensive" %%% "magnolia" % "0.12.6"
+    libraryDependencies += ("com.propensive" %%% "magnolia" % "0.16.0").exclude("org.scala-lang", "scala-compiler")
   )
 
 lazy val testMagnoliaJVM = testMagnolia.jvm
@@ -269,13 +279,8 @@ lazy val testRunner = crossProject(JVMPlatform, JSPlatform)
   .in(file("test-sbt"))
   .settings(stdSettings("zio-test-sbt"))
   .settings(crossProjectSettings)
-  .settings(
-    libraryDependencies ++= Seq(
-      "org.portable-scala" %%% "portable-scala-reflect" % "1.0.0"
-    ),
-    mainClass in (Test, run) := Some("zio.test.sbt.TestMain")
-  )
-  .jsSettings(libraryDependencies ++= Seq("org.scala-js" %% "scalajs-test-interface" % "0.6.32"))
+  .settings(mainClass in (Test, run) := Some("zio.test.sbt.TestMain"))
+  .jsSettings(libraryDependencies ++= Seq("org.scala-js" %% "scalajs-test-interface" % "1.1.1"))
   .jvmSettings(libraryDependencies ++= Seq("org.scala-sbt" % "test-interface" % "1.0"))
   .dependsOn(core)
   .dependsOn(test)
@@ -320,20 +325,20 @@ lazy val benchmarks = project.module
     skip in publish := true,
     libraryDependencies ++=
       Seq(
-        "co.fs2"                    %% "fs2-core"      % "2.3.0",
+        "co.fs2"                    %% "fs2-core"      % "2.4.2",
         "com.google.code.findbugs"  % "jsr305"         % "3.0.2",
-        "com.twitter"               %% "util-core"     % "20.3.0",
-        "com.typesafe.akka"         %% "akka-stream"   % "2.6.4",
-        "io.monix"                  %% "monix"         % "3.1.0",
-        "io.projectreactor"         % "reactor-core"   % "3.3.4.RELEASE",
+        "com.twitter"               %% "util-core"     % "20.6.0",
+        "com.typesafe.akka"         %% "akka-stream"   % "2.6.7",
+        "io.monix"                  %% "monix"         % "3.2.2",
+        "io.projectreactor"         % "reactor-core"   % "3.3.7.RELEASE",
         "io.reactivex.rxjava2"      % "rxjava"         % "2.2.19",
-        "org.ow2.asm"               % "asm"            % "8.0",
+        "org.ow2.asm"               % "asm"            % "8.0.1",
         "org.scala-lang"            % "scala-compiler" % scalaVersion.value % Provided,
         "org.scala-lang"            % "scala-reflect"  % scalaVersion.value,
-        "org.typelevel"             %% "cats-effect"   % "2.1.2",
+        "org.typelevel"             %% "cats-effect"   % "2.1.3",
         "org.scalacheck"            %% "scalacheck"    % "1.14.3",
         "hedgehog"                  %% "hedgehog-core" % "0.1.0",
-        "com.github.japgolly.nyaya" %% "nyaya-gen"     % "0.9.0"
+        "com.github.japgolly.nyaya" %% "nyaya-gen"     % "0.9.2"
       ),
     unusedCompileDependenciesFilter -= libraryDependencies.value
       .map(moduleid => moduleFilter(organization = moduleid.organization, name = moduleid.name))
@@ -366,15 +371,15 @@ lazy val docs = project.module
     scalacOptions ~= { _ filterNot (_ startsWith "-Xlint") },
     libraryDependencies ++= Seq(
       "com.github.ghik"     % "silencer-lib"                 % "1.4.4" % Provided cross CrossVersion.full,
-      "commons-io"          % "commons-io"                   % "2.6" % "provided",
+      "commons-io"          % "commons-io"                   % "2.7" % "provided",
       "org.jsoup"           % "jsoup"                        % "1.13.1" % "provided",
       "org.reactivestreams" % "reactive-streams-examples"    % "1.0.3" % "provided",
-      "dev.zio"             %% "zio-interop-cats"            % "2.0.0.0-RC12",
+      "dev.zio"             %% "zio-interop-cats"            % "2.0.0.0-RC13",
       "dev.zio"             %% "zio-interop-future"          % "2.12.8.0-RC6",
       "dev.zio"             %% "zio-interop-monix"           % "3.0.0.0-RC7",
-      "dev.zio"             %% "zio-interop-scalaz7x"        % "7.2.27.0-RC8",
+      "dev.zio"             %% "zio-interop-scalaz7x"        % "7.2.27.0-RC9",
       "dev.zio"             %% "zio-interop-java"            % "1.1.0.0-RC6",
-      "dev.zio"             %% "zio-interop-reactivestreams" % "1.0.3.5-RC6",
+      "dev.zio"             %% "zio-interop-reactivestreams" % "1.0.3.5-RC12",
       "dev.zio"             %% "zio-interop-twitter"         % "19.7.0.0-RC2"
     )
   )
@@ -387,4 +392,4 @@ lazy val docs = project.module
   )
   .enablePlugins(MdocPlugin, DocusaurusPlugin)
 
-scalafixDependencies in ThisBuild += "com.nequissimus" %% "sort-imports" % "0.3.1"
+scalafixDependencies in ThisBuild += "com.nequissimus" %% "sort-imports" % "0.5.0"
